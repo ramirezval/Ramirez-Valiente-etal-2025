@@ -1,11 +1,5 @@
-#setwd("F:/Dropbox/Plasticity in hydraulics review/data/5_final_dataset") #Original directory
-#setwd("F:/Dropbox/Paper Database plasticity") #My laptop
-setwd("C:/Users/j.ramirez/Dropbox/Paper Database plasticity") #CREAF PC and laptop
-setwd("C:/Users/jarv/Dropbox/Paper Database plasticity") #My miniPC
-setwd("C:/Users/José Alberto/Dropbox/Paper Database plasticity") #PC Portátil INIA
-setwd("C:/Users/jose.ramirez/Dropbox/Paper Database plasticity") #PC INIA
-setwd("C:/Users/j.ramirez/OneDrive - CREAF/Plasticity database paper/Datasets") #OneDrive CREAF PC and laptop
-setwd("C:/Users/jarv//OneDrive - CREAF/Plasticity database paper/Datasets") #OneDrive My miniPC
+
+
 #######################################################################
 ##        Code for: "Limited adaptive responses in safety traits     ##
 ## support greater hydraulic risk under drier conditions"            ##
