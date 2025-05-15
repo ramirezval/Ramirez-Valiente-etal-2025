@@ -1,8 +1,6 @@
-
-
 #######################################################################
-##        Code for: "Limited adaptive responses in safety traits     ##
-## support greater hydraulic risk under drier conditions"            ##
+##      Code for: "Limited adaptive responses in safety traits       ##
+##      support greater hydraulic risk under drier conditions"       ##
 #######################################################################
 
 library(ggplot2)
@@ -27,6 +25,12 @@ library(dplyr)
 library(ggplot2)
 library(readr)
 library(stringr)
+library(patchwork)
+library(ggh4x)
+library(ggforce)
+library(tidyverse)
+library(gridExtra)
+library(grid)
 
 ######################################
 ##### Imputation procedure ###########
@@ -320,6 +324,10 @@ plas<-escalc(measure="MD", n2i=plas$MeasR_N_cor_imp, n1i=plas$MeasT_N_cor_imp, m
 plas<-escalc(measure="ROM", n2i=plas$MeasR_N_cor_imp, n1i=plas$MeasT_N_cor_imp, m2i=plas$MeasR_mean_cor, m1i=plas$MeasT_mean_cor, sd2i=plas$MeasR_SD_cor_imp, sd1i=plas$MeasT_SD_cor_imp, 
              var.names=c("yi","vi"), add.measure=FALSE,
              append=TRUE, data=plas)
+#Estimate Cohen's d
+plas<-escalc(measure="SMD", n2i=plas$MeasR_N_cor_imp, n1i=plas$MeasT_N_cor_imp, m2i=plas$MeasR_mean_cor, m1i=plas$MeasT_mean_cor, sd2i=plas$MeasR_SD_cor_imp, sd1i=plas$MeasT_SD_cor_imp, 
+              var.names=c("cohensd_yi","cohensd_vi"), add.measure=FALSE,
+              append=TRUE, data=plas)
 
 
 #######################################
@@ -550,7 +558,7 @@ p
 ggsave(filename = "Fig.1b.png", plot = p, dpi = 300, width = 8, height = 12)
 
 
-##### Creating Fig. S3b #####
+##### Creating Fig. S4b #####
 #Load the file with the absolute log-ratios created in the previous section
 abslogratio <- read_tsv('abslogratio.tsv')
 
@@ -592,9 +600,1579 @@ figs3a<-plot+ theme(panel.grid = element_blank(),plot.margin = unit(c(1,0.5,0.5,
   scale_x_continuous(breaks=c(0,0.2,0.4,0.6,0.8)) + scale_y_continuous(breaks=c(0,0.2,0.4,0.6,0.8))+
   xlab("|log-ratio| Plasticity studies")+ylab("|log-ratio| Spatial studies")
 figs3a
-ggsave(filename = "Fig.S3a.png", plot = figs3a, dpi = 300, width = 10, height = 10)
+ggsave(filename = "Fig.S4b.png", plot = figs3a, dpi = 300, width = 10, height = 10)
 
 
+
+############################################################################
+### Meta-analysis for absolute log-ratios for trait pairwise combinations ###
+############################################################################
+# === INITIAL CONFIGURATION ===
+#Remember, yi in plas needs to be log-ratio
+reps <- 10000
+min_sample_size <- 3
+all_traits <- c("P50", "Ymd", "Ypd", "Ptlp", "Ks", "KL", "HV")
+trait_combinations <- combn(all_traits, 2, simplify = FALSE)
+
+# === DEFINE THE 4 SUBSETS AND VARIABLES ===
+subset_list <- list(
+  "All_Studies" = list(data = plas, variable = "abs"),
+  "Plasticity" = list(data = subset(plas, VarContextAgg != "spatial"), variable = "abs"),
+  "All_W" = list(data = subset(plas, VarFactorAgg == "W"), variable = "raw"),
+  "Plasticity_W" = list(data = subset(plas, VarContextAgg != "spatial" & VarFactorAgg == "W"), variable = "raw")
+)
+
+# === ANALYSIS FUNCTION FOR INDIVIDUAL TRAITS ===
+run_pairwise_trait_analysis <- function(data, trait, shared_papers, var_type = "raw", reps = 10000) {
+  
+  subset_data <- subset(data, MeasName == trait & PaperID %in% shared_papers)
+  
+  if (nrow(subset_data) == 0) {
+    return(data.frame(Estimate = NA, Lower_CI = NA, Upper_CI = NA, Sample_Size = 0, P_value = NA))
+  }
+  
+  if (nrow(subset_data) < min_sample_size) {
+    cat("  Insufficient sample size for Trait:", trait, "- Sample size:", nrow(subset_data), "\n")
+    return(data.frame(Estimate = NA, Lower_CI = NA, Upper_CI = NA, Sample_Size = nrow(subset_data), P_value = NA))
+  }
+  
+  response <- if (var_type == "abs") abs(subset_data$yi) else subset_data$yi
+  
+  model <- tryCatch(
+    {
+      rma.mv(response, subset_data$vi, random = list(~ 1 | PaperID, ~ 1 | SpeciesFix2),
+             control = list(optimizer = "optim", optmethod = "Nelder-Mead"),
+             data = subset_data)
+    },
+    error = function(e) NULL
+  )
+  
+  if (is.null(model)) {
+    cat("  Warning: Model fitting failed for Trait:", trait, "\n")
+    return(data.frame(Estimate = NA, Lower_CI = NA, Upper_CI = NA, Sample_Size = nrow(subset_data), P_value = NA))
+  }
+  
+  boot_func <- function(dat, indices, prog) {
+    prog$tick()
+    sel <- dat[indices, ]
+    response_boot <- if (var_type == "abs") abs(sel$yi) else sel$yi
+    res <- try(suppressWarnings(rma.mv(response_boot, sel$vi,
+                                       random = list(~ 1 | SpeciesFix, ~ 1 | PaperID), data = sel)),
+               silent = TRUE)
+    if (inherits(res, "try-error")) NA else coef(res)
+  }
+  
+  pb <- progress_bar$new(total = reps + 1)
+  boot_results <- tryCatch(
+    boot(subset_data, boot_func, reps, prog = pb),
+    error = function(e) NULL
+  )
+  
+  if (is.null(boot_results)) {
+    cat("  Bootstrap failed for Trait:", trait, "\n")
+    return(data.frame(Estimate = NA, Lower_CI = NA, Upper_CI = NA, Sample_Size = nrow(subset_data), P_value = NA))
+  }
+  
+  ci_results <- tryCatch(
+    boot.ci(boot_results, type = "bca", index = 1),
+    error = function(e) NULL
+  )
+  
+  if (is.null(ci_results)) {
+    cat("  CI calculation failed for Trait:", trait, "\n")
+    return(data.frame(Estimate = NA, Lower_CI = NA, Upper_CI = NA, Sample_Size = nrow(subset_data), P_value = NA))
+  }
+  
+  boot_estimates <- boot_results$t[, 1]
+  p_value <- 2 * min(
+    mean(boot_estimates <= 0, na.rm = TRUE),
+    mean(boot_estimates >= 0, na.rm = TRUE)
+  )
+  
+  data.frame(
+    Estimate = coef(model)[1],
+    Lower_CI = ci_results$bca[4],
+    Upper_CI = ci_results$bca[5],
+    Sample_Size = model$k,
+    P_value = p_value
+  )
+}
+
+# === MAIN FUNCTION ===
+run_all_pairwise <- function() {
+  all_results <- list()
+  
+  for (subset_name in names(subset_list)) {
+    subset_data <- subset_list[[subset_name]]$data
+    var_type <- subset_list[[subset_name]]$variable
+    
+    cat("Analyzing subset:", subset_name, "- Variable:", var_type, "\n")
+    
+    for (pair in trait_combinations) {
+      trait1 <- pair[1]
+      trait2 <- pair[2]
+      
+      shared_papers <- intersect(
+        unique(subset_data$PaperID[subset_data$MeasName == trait1]),
+        unique(subset_data$PaperID[subset_data$MeasName == trait2])
+      )
+      
+      if (length(shared_papers) == 0) next
+      
+      cat("  Traits:", trait1, "/", trait2, "- Shared Papers:", length(shared_papers), "\n")
+      
+      for (trait in c(trait1, trait2)) {
+        res <- run_pairwise_trait_analysis(subset_data, trait, shared_papers, var_type, reps)
+        n_obs <- nrow(subset(subset_data, MeasName == trait & PaperID %in% shared_papers))
+        
+        results_df <- data.frame(
+          Subset = subset_name,
+          MeasName = trait,
+          Paired_With = ifelse(trait == trait1, trait2, trait1),
+          Estimate = res$Estimate,
+          Lower_CI = res$Lower_CI,
+          Upper_CI = res$Upper_CI,
+          Sample_Size = res$Sample_Size,
+          P_value = res$P_value,
+          Shared_PaperIDs = length(shared_papers),
+          N_obs_Trait = n_obs,
+          Variable = ifelse(var_type == "abs", "abs(yi)", "yi")
+        )
+        
+        all_results[[paste(subset_name, trait1, trait2, trait, sep = "_")]] <- results_df
+      }
+    }
+  }
+  
+  do.call(rbind, all_results)
+}
+
+# === RUN AND SAVE RESULTS ===
+final_results <- run_all_pairwise()
+
+write.table(final_results,
+            file = "logratios_pairwise_traits_variable.tsv",
+            sep = "\t",
+            quote = FALSE,
+            row.names = FALSE)
+
+# Apply FDR correction only for rows with Sample_Size >= 20
+final_results$Pvalue_FDRcorrected <- NA
+valid_rows <- which(final_results$Sample_Size >= 20 & !is.na(final_results$P_value))
+final_results$Pvalue_FDRcorrected[valid_rows] <- p.adjust(final_results$P_value[valid_rows], method = "fdr")
+
+# Save results with FDR correction
+write.table(final_results,
+            file = "logratios_pairwise_traits_variable.tsv",
+            sep = "\t",
+            quote = FALSE,
+            row.names = FALSE)
+
+#### Creating Fig. 2 #######
+
+# Read the TSV file and prepare trait combinations
+df <- read_tsv("logratios_pairwise_traits_variable.tsv") %>%
+  mutate(
+    trait_comb = mapply(function(a, b) paste(sort(c(a, b)), collapse = "-"),
+                        trimws(MeasName), trimws(Paired_With))
+  )
+
+# Function to check confidence interval overlap between two entries
+check_overlap <- function(subdf) {
+  if (nrow(subdf) != 2) {
+    subdf$Sig <- NA
+    subdf$fontface_label <- "plain"
+    return(subdf)
+  }
+  lci1 <- subdf$Lower_CI[1]; hci1 <- subdf$Upper_CI[1]
+  lci2 <- subdf$Lower_CI[2]; hci2 <- subdf$Upper_CI[2]
+  if (any(is.na(c(lci1, hci1, lci2, hci2)))) {
+    subdf$Sig <- NA
+    subdf$fontface_label <- "plain"
+    return(subdf)
+  }
+  overlap <- !(hci1 < lci2 || hci2 < lci1)
+  subdf$Sig <- if (overlap) c("No", "No") else c("Yes", "Yes")
+  subdf$fontface_label <- if (overlap) c("plain", "plain") else c("bold", "bold")
+  return(subdf)
+}
+
+# Apply check_overlap BEFORE filtering
+df_result <- df %>%
+  group_by(Subset, trait_comb) %>%
+  group_modify(~ check_overlap(.x)) %>%
+  ungroup()
+
+# Trait label mapping for Greek symbols
+label_mapping <- c(
+  "Ypd" = expression(Psi["PD"]),
+  "Ymd" = expression(Psi["MD"]),
+  "P50" = expression('P'["50"]),
+  "Ptlp" = expression(Pi["TLP"]),
+  "KL" = expression('K'["L"]),
+  "Ks" = expression('K'["S"]),
+  "HV" = expression('Hv')
+)
+
+# Helper functions
+sorted_comb <- function(x) paste(sort(x), collapse = "-")
+label_parsed <- function(labels) lapply(labels, function(x) parse(text = x))
+replace_labels <- function(combination, mapping) {
+  traits <- strsplit(combination, "-")[[1]]
+  expr_parts <- sapply(traits, function(trait) deparse(mapping[[trait]]))
+  paste(expr_parts, collapse = " - ")
+}
+
+# Generate all trait pair combinations and corresponding labels
+traits <- c("Ypd", "Ymd", "P50", "Ptlp", "Ks", "KL", "HV")
+trait_pairs <- combn(traits, 2)
+pair_labels <- apply(trait_pairs, 2, sorted_comb)
+ordered_labels <- sapply(pair_labels, function(x) replace_labels(x, label_mapping))
+ordered_labels <- factor(ordered_labels, levels = ordered_labels)
+
+# Filter and prepare final dataset for plotting
+df <- df_result %>%
+  filter(
+    Subset %in% c("All_Studies", "Plasticity"),
+    Sample_Size >= 20,
+    Variable == "abs(yi)",
+    MeasName %in% traits
+  ) %>%
+  mutate(
+    trait1 = sapply(strsplit(as.character(trait_comb), "-"), function(x) sort(x)[1]),
+    trait2 = sapply(strsplit(as.character(trait_comb), "-"), function(x) sort(x)[2]),
+    trait.comb.sorted = paste(trait1, trait2, sep = "-"),
+    subset_type = ifelse(Subset == "Plasticity", "Plasticity", "All studies"),
+    variable = paste0("abs(", MeasName, ")")
+  ) %>%
+  filter(trait.comb.sorted %in% pair_labels) %>%
+  mutate(
+    axis_trait = case_when(
+      variable == paste0("abs(", trait1, ")") ~ trait1,
+      variable == paste0("abs(", trait2, ")") ~ trait2,
+      TRUE ~ NA_character_
+    ),
+    label_text = sapply(trait.comb.sorted, function(x) replace_labels(x, label_mapping)),
+    facet_order = factor(label_text, levels = levels(ordered_labels))
+  ) %>%
+  drop_na(axis_trait)
+
+# Set axis and grouping factors
+df$axis_trait <- factor(df$axis_trait, levels = traits)
+df$subset_type <- factor(df$subset_type, levels = c("Plasticity", "All studies"))
+
+# Plotting setup
+pos_dodge <- position_dodge(width = 0.70)
+
+plot <- ggplot(df, aes(x = axis_trait, y = Estimate, fill = subset_type)) +
+  geom_errorbar(aes(ymin = Lower_CI, ymax = Upper_CI),
+                width = 0, color = "black", size = 0.3,
+                position = pos_dodge) +
+  geom_point(shape = 21, size = 3, stroke = 0.4,
+             position = pos_dodge) +
+  geom_text(aes(y = Upper_CI + 0.04, label = Sample_Size, fontface = fontface_label, 
+                group = interaction(axis_trait, subset_type)),
+            position = position_dodge2(width = 1.1, preserve = "single", padding = 1),
+            size = 2.6, color = "black") +
+  scale_fill_manual(
+    values = c("Plasticity" = "black", "All studies" = "white"),
+    name = NULL,
+    labels = c("Plasticity studies", "All studies")
+  ) +
+  scale_x_discrete(labels = function(x) parse(text = sapply(x, function(t) deparse(label_mapping[[t]])))) +
+  facet_wrap(~ facet_order, labeller = labeller(facet_order = label_parsed),
+             scales = "free_x", nrow = 3) +
+  theme_classic() +
+  theme(
+    strip.text = element_blank(),
+    axis.title.y = element_text(size = 14, color = "black", margin = margin(r = 10)),
+    axis.text = element_text(size = 10, color = "black"),
+    legend.position = c(0.88, 0.97),
+    legend.background = element_blank(),
+    legend.key = element_blank(),
+    legend.text = element_text(size = 10)
+  ) +
+  ylab("|log-ratio|") +
+  xlab(NULL) +
+  coord_cartesian(ylim = c(0, 0.85))
+
+# Display and save the figure
+print(plot)
+ggsave("Fig. 2.png", plot = plot, width = 6, height = 6.5, dpi = 300)
+
+
+#### Creating Fig. S3 #####
+
+JA_plasticity <- read_tsv("logratios_pairwise_traits_variable.tsv") %>%
+  mutate(
+    MeasName = dplyr::recode(MeasName, "KL" = "Kl"),
+    Paired_With = dplyr::recode(Paired_With, "KL" = "Kl"),
+    trait.comb = mapply(function(a, b) paste(sort(c(a, b)), collapse = "-"),
+                        trimws(MeasName), trimws(Paired_With)),
+    variable = ifelse(Variable == "abs(yi)", paste0("abs(", MeasName, ")"), MeasName),
+    type = case_when(
+      Subset %in% c("All_Studies", "All_W") ~ "all_studies",
+      Subset %in% c("Plasticity", "Plasticity_W") ~ "plasticity"
+    ),
+    class = case_when(
+      Subset %in% c("All_Studies", "Plasticity") ~ "All environmental factors",
+      Subset %in% c("All_W", "Plasticity_W") ~ "Water availability"
+    ),
+    log.ratio = Estimate,
+    LCI = Lower_CI,
+    HCI = Upper_CI,
+    N.Obs = N_obs_Trait
+  ) %>%
+  relocate(type, class, trait.comb, variable, log.ratio, LCI, HCI, N.Obs)
+
+
+# Load functions
+{
+  '%!in%' <- function(x,y)!('%in%'(x,y))
+  
+  meanNA   <- function(x) mean(x, na.rm=TRUE)
+  maxNA   <- function(x) max(x, na.rm=TRUE)
+  minNA   <- function(x) min(x, na.rm=TRUE)
+  sumNA   <- function(x) sum(x, na.rm=TRUE)
+  meanNAN  <- function(x) mean(na.omit(x))
+  sdNA     <- function(x) sqrt(var(x,na.rm=TRUE))
+  sterr    <- function(x) sqrt(var(x,na.rm=TRUE)/length(na.omit(x)))
+  
+  # formatting for plotting
+  My_Theme = theme(
+    axis.title.x = element_text(size=rel(1.0)),
+    axis.title.y = element_text(size=rel(1.0)),
+    title = element_text(size=rel(1.0)),
+    plot.margin = unit(c(0.1, 0.1, 0.1, 0.1), "cm"),
+    axis.text.x=element_text(size = 14),
+    axis.text.y=element_text(size = 12),
+    plot.title = element_text(size = 20), 
+    strip.text.x = element_text(size = 12, face = "bold.italic"),
+    strip.text.y = element_text(size = 12, face = "bold.italic"),
+    legend.position = "none" 
+  )
+  
+  
+  }
+
+# Add column indicating whether the confidence intervals of both traits do not overlap
+nonoverlapping <- JA_plasticity %>%
+  group_by(type, class, trait.comb) %>%
+  filter(n() == 2) %>%
+  summarise(
+    overlap = !(max(LCI) > min(HCI) | max(HCI) < min(LCI)),
+    .groups = "drop"
+  ) %>%
+  mutate(bold = !overlap) %>%
+  dplyr::select(type, class, trait.comb, bold)
+
+
+# Join to the main dataset
+JA_plasticity <- JA_plasticity %>%
+  left_join(nonoverlapping, by = c("type", "class", "trait.comb")) %>%
+  mutate(bold = ifelse(is.na(bold), FALSE, bold))
+
+# Mapping of labels to Greek letters
+label_mapping <- c(
+  "Ypd" = expression(Psi["PD"]),
+  "Ymd" = expression(Psi["MD"]),
+  "P50" = expression('P'["50"]),
+  "Ptlp"= expression(Pi["TLP"]),
+  "Kl"  = expression('K'["L"]),
+  "Ks"  = expression('K'["S"]),
+  "HV"  = expression('Hv')
+)
+
+# Function to replace labels with Greek letters
+replace_labels <- function(comparison, mapping) {
+  labels <- strsplit(comparison, "-")[[1]]
+  expr_labels <- sapply(labels, function(label) mapping[[label]])
+  paste(expr_labels, collapse = "~-~")
+}
+
+# Apply the mapping to the data
+JA_plasticity$trait.comb_expr <- sapply(JA_plasticity$trait.comb, function(comp) {
+  expr_labels <- replace_labels(comp, label_mapping)
+})
+
+
+
+
+# all studies all environmental factors
+{
+  
+  Ypd <- JA_plasticity  %>% 
+    mutate(variable = factor(variable, levels = c('abs(Ypd)','abs(Ymd)', 'abs(P50)', 
+                                                  'abs(Ptlp)', 'abs(Ks)', 'abs(Kl)',
+                                                  'abs(HV)'))) %>%
+    filter(type == 'all_studies') %>% 
+    filter(class == 'All environmental factors') %>% 
+    filter(str_detect(as.character(trait.comb), "Ypd")) %>%
+    filter(N.Obs >= 10) %>%
+    mutate(trait.comb = fct_recode(trait.comb, 'Ypd-P50'  = 'P50-Ypd')) %>% 
+    mutate(trait.comb = fct_recode(trait.comb, 'Ypd-Ymd'  = 'Ymd-Ypd')) %>%
+    ggplot(aes(y = log.ratio,
+               x = trait.comb,
+               fill = variable))  +  
+    geom_errorbar(aes(ymin = LCI,
+                      ymax = HCI,
+                      group = variable), 
+                  position = position_dodge(width = 0.4),
+                  width = 0, linewidth = 0.5, color = "black") +
+    geom_point(aes(fill = variable),  # punto normal sin condicional
+               shape = 21, size = 4, color = "black", stroke = 0.5,
+               position = position_dodge(width = 0.4)) +
+    geom_text(aes(x = 0.9, y = 0.75, label = "Psi['PD']"),
+              hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
+              color = 'black') +    
+    geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
+              position = position_dodge2(width = 0.78, preserve = "single"),
+              hjust = 0.5, size = 3.5, color = 'black') +
+    scale_fill_manual(values = c('abs(P50)'='orange','abs(Ymd)'='orange', 
+                                 'abs(Ypd)'='black', 'abs(Ptlp)'='orange',
+                                 'abs(Ks)'='orange', 'abs(Kl)'='orange',
+                                 'abs(HV)'='orange')) +
+    scale_x_discrete(labels = function(x) {
+      sapply(x, function(label) {
+        parse(text = replace_labels(label, label_mapping))
+      })
+    }) +
+    theme_classic() +
+    My_Theme +
+    scale_y_continuous(limits = c(0, 0.88), breaks = seq(0, 0.8, by = 0.2)) +
+    xlab(NULL) +
+    ylab('') +
+    theme(axis.text.x = element_text(angle = 20, hjust = 1))
+  
+  
+  Ymd <- JA_plasticity  %>% 
+    mutate(variable = factor(variable, levels = c('abs(Ymd)', 'abs(Ypd)', 'abs(P50)',
+                                                  'abs(Ptlp)', 'abs(Ks)', 'abs(Kl)',
+                                                  'abs(HV)'))) %>%
+    filter(type == 'all_studies') %>%
+    filter(class == 'All environmental factors') %>%
+    # use first filter to exclude Ptlp, or second to include it
+    # filter(trait.comb == 'P50-Ymd' | trait.comb == 'Ymd-Ypd' |
+    #          trait.comb == 'Ymd-Ks' | trait.comb == 'Ymd-Kl' | 
+    # trait.comb == 'Ymd-HV' ) %>% 
+    filter(str_detect(as.character(trait.comb), "Ymd")) %>%
+    filter(N.Obs >= 10) %>%
+    mutate(trait.comb = fct_recode(trait.comb, 'Ymd-P50'  = 'P50-Ymd')) %>% 
+    ggplot(aes(y = log.ratio,
+               x = trait.comb,
+               fill = variable))  +  
+    geom_errorbar(aes(ymin = LCI,
+                      ymax = HCI,
+                      group = variable), 
+                  position = position_dodge(width = 0.3),
+                  width = 0, linewidth = 0.5, color = "black") + # Map the variable to shape aesthetic
+    geom_point(aes(fill=variable),shape = 21, size = 4, color = "black", stroke = 0.5,  # círculos con borde negro
+               position = position_dodge(width = 0.3)) +
+    geom_text(aes(x = 0.9, y = 0.75, label = "Psi['MD']"),  # Use a character string for the expression
+              hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
+              color = 'black') +     
+    geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
+              position = position_dodge2(width = 0.78, preserve = "single"),
+              hjust = 0.5, size = 3.5, color = 'black')+
+    #scale_shape_manual(values = c('abs(P50)' = 16, 'abs(Ymd)' = 17, 'abs(Ypd)' = 18,
+    #                              'abs(Ks)' = 21, 'abs(Kl)' = 22, 'abs(HV)' = 23,
+    #                              'abs(Ptlp)' = 24)) +
+    scale_fill_manual(values = c('abs(P50)'='orange','abs(Ymd)'='black', 'abs(Ypd)'='orange',
+                                 'abs(Ks)'='orange', 'abs(Kl)'='orange',
+                                 'abs(Ptlp)'='orange','abs(HV)'='orange')) +
+    scale_x_discrete(labels = function(x) {
+      sapply(x, function(label) {
+        parse(text = replace_labels(label, label_mapping))
+      })
+    }) +
+    theme_classic() +
+    My_Theme  +                                # Modify labels of ggplot2 barplot
+    scale_y_continuous(limits = c(0, 0.88), breaks = seq(0, 0.8, by = 0.2)) +
+    xlab(NULL) +
+    ylab('') +
+    theme(axis.text.x = element_text(angle = 20, hjust = 1))
+  
+  
+  P50 <- JA_plasticity %>%
+    mutate(variable = factor(variable, levels = c('abs(P50)', 'abs(Ymd)', 'abs(Ypd)',
+                                                  'abs(Ptlp)', 'abs(Ks)', 'abs(Kl)',
+                                                  'abs(HV)'))) %>%
+    filter(type == 'all_studies') %>%
+    filter(class == 'All environmental factors') %>%
+    # use first filter to exclude Ptlp, or second to include it
+    # filter(trait.comb == 'P50-Ymd' | trait.comb == 'P50-Ypd' |
+    #          trait.comb == 'P50-Ks' | trait.comb == 'P50-Kl' | 
+    #          trait.comb == 'P50-HV' ) %>%
+    filter(str_detect(as.character(trait.comb), "P50")) %>%
+    filter(N.Obs >= 10) %>%
+    ggplot(aes(y = log.ratio,
+               x = trait.comb,
+               fill = variable))  +  
+    geom_errorbar(aes(ymin = LCI,
+                      ymax = HCI,
+                      group = variable), 
+                  position = position_dodge(width = 0.3),
+                  width = 0, linewidth = 0.5, color = "black") + # Map the variable to shape aesthetic
+    geom_point(aes(fill=variable),shape = 21, size = 4, color = "black", stroke = 0.5,  # círculos con borde negro
+               position = position_dodge(width = 0.3)) +
+    geom_text(aes(x = 0.9, y = 0.75, label = "P['50']"),  # Use a character string for the expression
+              hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
+              color = 'black') +     
+    geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
+              position = position_dodge2(width = 0.78, preserve = "single"),
+              hjust = 0.5, size = 3.5, color = 'black') +
+    #scale_shape_manual(values = c('abs(P50)' = 16, 'abs(Ymd)' = 17, 'abs(Ypd)' = 18,
+    #                              'abs(Ks)' = 21, 'abs(Kl)' = 22, 'abs(HV)' = 23,
+    #                              'abs(Ptlp)' = 24)) +
+    scale_fill_manual(values = c('abs(P50)'='black','abs(Ymd)'='orange', 'abs(Ypd)'='orange',
+                                 'abs(Ks)'='orange', 'abs(Kl)'='orange',
+                                 'abs(Ptlp)'='orange','abs(HV)'='orange')) +
+    scale_x_discrete(labels = function(x) {
+      sapply(x, function(label) {
+        parse(text = replace_labels(label, label_mapping))
+      })
+    }) +
+    theme_classic() +
+    My_Theme  +
+    scale_y_continuous(limits = c(0, 0.88), breaks = seq(0, 0.8, by = 0.2)) +
+    xlab(NULL) +
+    ylab('')  +
+    theme(axis.text.x = element_text(angle = 20, hjust = 1))
+  
+  Ptlp <- JA_plasticity  %>% 
+    mutate(variable = factor(variable, levels = c('abs(Ptlp)','abs(Ypd)', 'abs(Ymd)', 
+                                                  'abs(P50)', 'abs(Ks)', 'abs(Kl)',
+                                                  'abs(HV)'))) %>%
+    filter(type == 'all_studies') %>% 
+    filter(class == 'All environmental factors') %>% 
+    # use first filter to exclude Ptlp, or second to include it
+    # filter(trait.comb == 'P50-Ptlp' | trait.comb == 'Ymd-Ptlp' |
+    #          trait.comb == 'Ypd-Ptlp' | trait.comb == 'Ypd-Ptlp' | 
+    #          trait.comb == 'Ypd-Ptlp' ) %>% 
+    filter(str_detect(as.character(trait.comb), "Ptlp")) %>% 
+    filter(N.Obs >= 10) %>%
+    mutate(trait.comb = fct_recode(trait.comb, 'Ptlp-P50'  = 'P50-Ptlp')) %>% 
+    mutate(trait.comb = fct_recode(trait.comb, 'Ptlp-Ymd'  = 'Ymd-Ptlp')) %>%
+    ggplot(aes(y = log.ratio,
+               x = trait.comb,
+               fill = variable))  +  
+    geom_errorbar(aes(ymin = LCI,
+                      ymax = HCI,
+                      group = variable), 
+                  position = position_dodge(width = 0.3),
+                  width = 0, linewidth = 0.5, color = "black") + # Map the variable to shape aesthetic
+    geom_point(aes(fill=variable),shape = 21, size = 4, color = "black", stroke = 0.5,  # círculos con borde negro
+               position = position_dodge(width = 0.3)) +
+    geom_text(aes(x = 0.9, y = 0.75, label = "Pi['TLP']"),  # Use a character string for the expression
+              hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
+              color = 'black') +     
+    geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
+              position = position_dodge2(width = 0.78, preserve = "single"),
+              hjust = 0.5, size = 3.5, color = 'black') +
+    #scale_shape_manual(values = c('abs(P50)' = 16, 'abs(Ymd)' = 17, 'abs(Ypd)' = 18,
+    #                              'abs(Ks)' = 21, 'abs(Kl)' = 22, 'abs(HV)' = 23,
+    #                              'abs(Ptlp)' = 24)) +
+    scale_fill_manual(values = c('abs(P50)'='orange','abs(Ymd)'='orange', 
+                                 'abs(Ypd)'='orange',
+                                 'abs(Ks)'='orange', 'abs(Kl)'='orange',
+                                 'abs(Ptlp)'='black','abs(HV)'='orange')) +
+    scale_x_discrete(labels = function(x) {
+      sapply(x, function(label) {
+        parse(text = replace_labels(label, label_mapping))
+      })
+    }) +
+    theme_classic() +
+    My_Theme  +                                # Modify labels of ggplot2 barplot
+    scale_y_continuous(limits = c(0, 0.88), breaks = seq(0, 0.8, by = 0.2)) +
+    xlab(NULL) +
+    ylab('') +
+    theme(axis.text.x = element_text(angle = 20, hjust = 1))
+  
+  
+  Ks <- JA_plasticity  %>% 
+    mutate(variable = factor(variable, levels = c( 'abs(Ks)', 'abs(Ypd)','abs(Ymd)', 
+                                                   'abs(P50)','abs(Ptlp)','abs(Kl)',
+                                                   'abs(HV)'))) %>%
+    filter(type == 'all_studies') %>% 
+    filter(class == 'All environmental factors') %>% 
+    # use first filter to exclude Ptlp, or second to include it
+    # filter(trait.comb == 'P50-Ks' | trait.comb == 'Ymd-Ks' |
+    #        trait.comb == 'Ypd-Ks' | trait.comb == 'Ks-Kl' | 
+    #          trait.comb == 'Ks-HV' ) %>% 
+    filter(str_detect(as.character(trait.comb), "Ks")) %>%
+    filter(N.Obs >= 10) %>%
+    mutate(trait.comb = fct_recode(trait.comb, 'Ks-P50'  = 'P50-Ks')) %>% 
+    mutate(trait.comb = fct_recode(trait.comb, 'Ks-Ymd'  = 'Ymd-Ks')) %>%
+    mutate(trait.comb = fct_recode(trait.comb, 'Ks-Ypd'  = 'Ypd-Ks')) %>%
+    ggplot(aes(y = log.ratio,
+               x = trait.comb,
+               fill = variable))  +  
+    geom_errorbar(aes(ymin = LCI,
+                      ymax = HCI,
+                      group = variable), 
+                  position = position_dodge(width = 0.3),
+                  width = 0, linewidth = 0.5, color = "black") + # Map the variable to shape aesthetic
+    geom_point(aes(fill=variable),shape = 21, size = 4, color = "black", stroke = 0.5,  # círculos con borde negro
+               position = position_dodge(width = 0.3)) +
+    geom_text(aes(x = 0.9, y = 0.75, label = "K['S']"),  # Use a character string for the expression
+              hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
+              color = 'black') +     
+    geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
+              position = position_dodge2(width = 0.78, preserve = "single"),
+              hjust = 0.5, size = 3.5, color = 'black') +
+    #scale_shape_manual(values = c('abs(P50)' = 16, 'abs(Ymd)' = 17, 'abs(Ypd)' = 18,
+    #                              'abs(Ks)' = 21, 'abs(Kl)' = 22, 'abs(HV)' = 23,
+    #                              'abs(Ptlp)' = 24)) +
+    scale_fill_manual(values = c('abs(P50)'='orange','abs(Ymd)'='orange', 'abs(Ypd)'='orange',
+                                 'abs(Ks)'='black', 'abs(Kl)'='orange',
+                                 'abs(Ptlp)'='orange','abs(HV)'='orange')) +
+    scale_x_discrete(labels = function(x) {
+      sapply(x, function(label) {
+        parse(text = replace_labels(label, label_mapping))
+      })
+    }) +
+    theme_classic() +
+    My_Theme  +                                # Modify labels of ggplot2 barplot
+    scale_y_continuous(limits = c(0, 0.88), breaks = seq(0, 0.8, by = 0.2)) +
+    xlab(NULL) +
+    ylab('') +
+    theme(axis.text.x = element_text(angle = 20, hjust = 1))
+  
+  Kl <- JA_plasticity  %>% 
+    mutate(variable = factor(variable, levels = c( 'abs(Kl)', 'abs(Ypd)','abs(Ymd)', 
+                                                   'abs(P50)','abs(Ptlp)','abs(Ks)',
+                                                   'abs(HV)'))) %>%
+    filter(type == 'all_studies') %>% 
+    filter(class == 'All environmental factors') %>% 
+    # use first filter to exclude Ptlp, or second to include it
+    # filter(trait.comb == 'P50-Kl' | trait.comb == 'Ymd-Kl' |
+    #          trait.comb == 'Ypd-Kl' | trait.comb == 'Ks-Kl' | 
+    #          trait.comb == 'Kl-HV' ) %>% 
+    filter(str_detect(as.character(trait.comb), "Kl")) %>%
+    filter(N.Obs >= 10) %>%
+    mutate(trait.comb = fct_recode(trait.comb, 'Kl-P50'  = 'P50-Kl')) %>% 
+    mutate(trait.comb = fct_recode(trait.comb, 'Kl-Ymd'  = 'Ymd-Kl')) %>%
+    mutate(trait.comb = fct_recode(trait.comb, 'Kl-Ypd'  = 'Ypd-Kl')) %>%
+    mutate(trait.comb = fct_recode(trait.comb, 'Kl-Ks'   = 'Ks-Kl')) %>%
+    ggplot(aes(y = log.ratio,
+               x = trait.comb,
+               fill = variable))  +  
+    geom_errorbar(aes(ymin = LCI,
+                      ymax = HCI,
+                      group = variable), 
+                  position = position_dodge(width = 0.3),
+                  width = 0, linewidth = 0.5, color = "black") + # Map the variable to shape aesthetic
+    geom_point(aes(fill=variable),shape = 21, size = 4, color = "black", stroke = 0.5,  # círculos con borde negro
+               position = position_dodge(width = 0.3)) +
+    geom_text(aes(x = 0.9, y = 0.75, label = "K['L']"),  # Use a character string for the expression
+              hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
+              color = 'black') +     
+    geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
+              position = position_dodge2(width = 0.78, preserve = "single"),
+              hjust = 0.5, size = 3.5, color = 'black') +
+    #scale_shape_manual(values = c('abs(P50)' = 16, 'abs(Ymd)' = 17, 'abs(Ypd)' = 18,
+    #                              'abs(Ks)' = 21, 'abs(Kl)' = 22, 'abs(HV)' = 23,
+    #                              'abs(Ptlp)' = 24)) +
+    scale_fill_manual(values = c('abs(P50)'='orange','abs(Ymd)'='orange', 'abs(Ypd)'='orange',
+                                 'abs(Ks)'='orange', 'abs(Kl)'='black',
+                                 'abs(Ptlp)'='orange','abs(HV)'='orange')) +
+    scale_x_discrete(labels = function(x) {
+      sapply(x, function(label) {
+        parse(text = replace_labels(label, label_mapping))
+      })
+    }) +
+    theme_classic() +
+    My_Theme  +                                # Modify labels of ggplot2 barplot
+    scale_y_continuous(limits = c(0, 0.88), breaks = seq(0, 0.8, by = 0.2)) +
+    xlab(NULL) +
+    ylab('') +
+    theme(axis.text.x = element_text(angle = 20, hjust = 1))
+  
+  HV <- JA_plasticity  %>% 
+    mutate(variable = factor(variable, levels = c( 'abs(HV)', 'abs(Kl)',
+                                                   'abs(Ypd)','abs(Ymd)', 
+                                                   'abs(P50)','abs(Ptlp)','abs(Ks)'))) %>%
+    filter(type == 'all_studies') %>% 
+    filter(class == 'All environmental factors') %>% 
+    # use first filter to exclude Ptlp, or second to include it
+    # filter(trait.comb == 'P50-HV' | trait.comb == 'Ymd-HV' |
+    #          trait.comb == 'Ypd-HV' | trait.comb == 'Ks-HV' | 
+    #          trait.comb == 'Kl-HV' ) %>% 
+    filter(str_detect(as.character(trait.comb), "HV")) %>%
+    filter(N.Obs >= 10) %>%
+    mutate(trait.comb = fct_recode(trait.comb, 'HV-P50'  = 'P50-HV')) %>% 
+    mutate(trait.comb = fct_recode(trait.comb, 'HV-Ymd'  = 'Ymd-HV')) %>%
+    mutate(trait.comb = fct_recode(trait.comb, 'HV-Ypd'  = 'Ypd-HV')) %>%
+    mutate(trait.comb = fct_recode(trait.comb, 'HV-Kl'   = 'Kl-HV')) %>%
+    mutate(trait.comb = fct_recode(trait.comb, 'HV-Ks'  = 'Ks-HV')) %>%
+    ggplot(aes(y = log.ratio,
+               x = trait.comb,
+               fill = variable))  +  
+    geom_errorbar(aes(ymin = LCI,
+                      ymax = HCI,
+                      group = variable), 
+                  position = position_dodge(width = 0.3),
+                  width = 0, linewidth = 0.5, color = "black") + # Map the variable to shape aesthetic
+    geom_point(aes(fill=variable),shape = 21, size = 4, color = "black", stroke = 0.5,  # círculos con borde negro
+               position = position_dodge(width = 0.3)) +
+    geom_text(aes(x = 0.9, y = 0.75, label = "Hv"),  # Use a character string for the expression
+              hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
+              color = 'black') +     
+    geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
+              position = position_dodge2(width = 0.78, preserve = "single"),
+              hjust = 0.5, size = 3.5, color = 'black') +
+    #scale_shape_manual(values = c('abs(P50)' = 16, 'abs(Ymd)' = 17, 'abs(Ypd)' = 18,
+    #                              'abs(Ks)' = 21, 'abs(Kl)' = 22, 'abs(HV)' = 23,
+    #                              'abs(Ptlp)' = 24)) +
+    scale_fill_manual(values = c('abs(P50)'='orange','abs(Ymd)'='orange', 'abs(Ypd)'='orange',
+                                 'abs(Ks)'='orange', 'abs(Kl)'='orange',
+                                 'abs(Ptlp)'='orange','abs(HV)'='black')) +
+    scale_x_discrete(labels = function(x) {
+      sapply(x, function(label) {
+        parse(text = replace_labels(label, label_mapping))
+      })
+    }) +
+    theme_classic() +
+    My_Theme  +
+    scale_y_continuous(limits = c(0, 0.88), breaks = seq(0, 0.8, by = 0.2)) +
+    xlab(NULL) +
+    ylab('') +
+    theme(axis.text.x = element_text(angle = 20, hjust = 1))
+  
+}
+
+plot<-grid.arrange(Ypd, Ymd, P50, Ptlp, 
+                   Ks, Kl, HV,
+                   ncol = 1, left = textGrob("|log-ratio|", rot = 90, gp = gpar(fontsize = 16))  # Shared Y-axis title
+)
+plot
+ggsave(filename = "test4.png", plot = plot, dpi = 300, width = 5, height = 15)
+
+
+
+# plasticity all environmental factors
+{
+  
+  Ypd_plast <- JA_plasticity  %>% 
+    mutate(variable = factor(variable, levels = c('abs(Ypd)','abs(Ymd)', 'abs(P50)', 
+                                                  'abs(Ptlp)', 'abs(Ks)', 'abs(Kl)',
+                                                  'abs(HV)'))) %>%
+    filter(type == 'plasticity') %>% 
+    filter(class == 'All environmental factors') %>% 
+    # use first filter to exclude Ptlp, or second to include it
+    # filter(trait.comb == 'P50-Ypd' | trait.comb == 'Ymd-Ypd' |
+    #          trait.comb == 'Ypd-Ks' | trait.comb == 'Ypd-Kl' | 
+    #          trait.comb == 'Ypd-HV' ) %>% 
+    filter(str_detect(as.character(trait.comb), "Ypd")) %>% 
+    filter(N.Obs >= 10) %>%
+    mutate(trait.comb = fct_recode(trait.comb, 'Ypd-P50'  = 'P50-Ypd')) %>% 
+    mutate(trait.comb = fct_recode(trait.comb, 'Ypd-Ymd'  = 'Ymd-Ypd')) %>%
+    ggplot(aes(y = log.ratio,
+               x = trait.comb,
+               fill = variable))  +  
+    geom_errorbar(aes(ymin = LCI,
+                      ymax = HCI,
+                      group = variable), 
+                  position = position_dodge(width = 0.3),
+                  width = 0, linewidth = 0.5, color = "black") + # Map the variable to shape aesthetic
+    geom_point(aes(fill=variable),shape = 21, size = 4, color = "black", stroke = 0.5,  # círculos con borde negro
+               position = position_dodge(width = 0.3)) +
+    geom_text(aes(x = 0.85, y = 0.75, label = "Psi['PD']"),  # Use a character string for the expression
+              hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
+              color = 'black') +     
+    geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
+              position = position_dodge2(width = 0.78, preserve = "single"),
+              hjust = 0.5, size = 3.5, color = 'black') +
+    #scale_shape_manual(values = c('abs(P50)' = 16, 'abs(Ymd)' = 17, 'abs(Ypd)' = 18,
+    #                              'abs(Ks)' = 21, 'abs(Kl)' = 22, 'abs(HV)' = 23,
+    #                              'abs(Ptlp)' = 24)) +
+    scale_fill_manual(values = c('abs(P50)'='orange','abs(Ymd)'='orange', 
+                                 'abs(Ypd)'='black', 'abs(Ptlp)'='orange',
+                                 'abs(Ks)'='orange', 'abs(Kl)'='orange',
+                                 'abs(HV)'='orange')) +
+    scale_x_discrete(labels = function(x) {
+      sapply(x, function(label) {
+        parse(text = replace_labels(label, label_mapping))
+      })
+    }) +
+    theme_classic() +
+    My_Theme  +                                # Modify labels of ggplot2 barplot
+    scale_y_continuous(limits = c(0, 0.88), breaks = seq(0, 0.8, by = 0.2)) +
+    xlab(NULL) +
+    ylab('')  +
+    theme(axis.text.x = element_text(angle = 20, hjust = 1))
+  
+  
+  
+  Ymd_plast <- JA_plasticity  %>% 
+    mutate(variable = factor(variable, levels = c('abs(Ymd)', 'abs(Ypd)', 'abs(P50)',
+                                                  'abs(Ptlp)', 'abs(Ks)', 'abs(Kl)',
+                                                  'abs(HV)'))) %>%
+    filter(type == 'plasticity') %>% 
+    filter(class == 'All environmental factors') %>%
+    # use first filter to exclude Ptlp, or second to include it
+    # filter(trait.comb == 'P50-Ymd' | trait.comb == 'Ymd-Ypd' |
+    #          trait.comb == 'Ymd-Ks' | trait.comb == 'Ymd-Kl' | 
+    # trait.comb == 'Ymd-HV' ) %>% 
+    filter(str_detect(as.character(trait.comb), "Ymd")) %>%
+    filter(N.Obs >= 10) %>%
+    mutate(trait.comb = fct_recode(trait.comb, 'Ymd-P50'  = 'P50-Ymd')) %>% 
+    ggplot(aes(y = log.ratio,
+               x = trait.comb,
+               fill = variable))  +  
+    geom_errorbar(aes(ymin = LCI,
+                      ymax = HCI,
+                      group = variable), 
+                  position = position_dodge(width = 0.3),
+                  width = 0, linewidth = 0.5, color = "black") + # Map the variable to shape aesthetic
+    geom_point(aes(fill=variable),shape = 21, size = 4, color = "black", stroke = 0.5,  # círculos con borde negro
+               position = position_dodge(width = 0.3)) +
+    geom_text(aes(x = 0.85, y = 0.75, label = "Psi['MD']"),  # Use a character string for the expression
+              hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
+              color = 'black') +     
+    geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
+              position = position_dodge2(width = 0.78, preserve = "single"),
+              hjust = 0.5, size = 3.5, color = 'black') +
+    #scale_shape_manual(values = c('abs(P50)' = 16, 'abs(Ymd)' = 17, 'abs(Ypd)' = 18,
+    #                              'abs(Ks)' = 21, 'abs(Kl)' = 22, 'abs(HV)' = 23,
+    #                              'abs(Ptlp)' = 24)) +
+    scale_fill_manual(values = c('abs(P50)'='orange','abs(Ymd)'='black', 'abs(Ypd)'='orange',
+                                 'abs(Ks)'='orange', 'abs(Kl)'='orange',
+                                 'abs(Ptlp)'='orange','abs(HV)'='orange')) +
+    scale_x_discrete(labels = function(x) {
+      sapply(x, function(label) {
+        parse(text = replace_labels(label, label_mapping))
+      })
+    }) +
+    theme_classic() +
+    My_Theme  +                                # Modify labels of ggplot2 barplot
+    scale_y_continuous(limits = c(0, 0.88), breaks = seq(0, 0.8, by = 0.2)) +
+    xlab(NULL) +
+    ylab('') +
+    theme(axis.text.x = element_text(angle = 20, hjust = 1))
+  
+  
+  P50_plast <- JA_plasticity  %>% 
+    mutate(variable = factor(variable, levels = c('abs(P50)', 'abs(Ymd)', 'abs(Ypd)',
+                                                  'abs(Ptlp)', 'abs(Ks)', 'abs(Kl)',
+                                                  'abs(HV)'))) %>%
+    filter(type == 'plasticity') %>% 
+    filter(class == 'All environmental factors') %>% 
+    # use first filter to exclude Ptlp, or second to include it
+    # filter(trait.comb == 'P50-Ymd' | trait.comb == 'P50-Ypd' |
+    #          trait.comb == 'P50-Ks' | trait.comb == 'P50-Kl' | 
+    #          trait.comb == 'P50-HV' ) %>%
+    filter(str_detect(as.character(trait.comb), "P50")) %>%
+    filter(N.Obs >= 10) %>%
+    ggplot(aes(y = log.ratio,
+               x = trait.comb,
+               fill = variable))  +  
+    geom_errorbar(aes(ymin = LCI,
+                      ymax = HCI,
+                      group = variable), 
+                  position = position_dodge(width = 0.3),
+                  width = 0, linewidth = 0.5, color = "black") + # Map the variable to shape aesthetic
+    geom_point(aes(fill=variable),shape = 21, size = 4, color = "black", stroke = 0.5,  # círculos con borde negro
+               position = position_dodge(width = 0.3)) +
+    geom_text(aes(x = 0.85, y = 0.75, label = "P['50']"),  # Use a character string for the expression
+              hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
+              color = 'black') +     
+    geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
+              position = position_dodge2(width = 0.78, preserve = "single"),
+              hjust = 0.5, size = 3.5, color = 'black') +
+    #scale_shape_manual(values = c('abs(P50)' = 16, 'abs(Ymd)' = 17, 'abs(Ypd)' = 18,
+    #                              'abs(Ks)' = 21, 'abs(Kl)' = 22, 'abs(HV)' = 23,
+    #                              'abs(Ptlp)' = 24)) +
+    scale_fill_manual(values = c('abs(P50)'='black','abs(Ymd)'='orange', 'abs(Ypd)'='orange',
+                                 'abs(Ks)'='orange', 'abs(Kl)'='orange',
+                                 'abs(Ptlp)'='orange', 'abs(HV)'='orange')) +
+    scale_x_discrete(labels = function(x) {
+      sapply(x, function(label) {
+        parse(text = replace_labels(label, label_mapping))
+      })
+    }) +
+    theme_classic() +
+    My_Theme  +
+    scale_y_continuous(limits = c(0, 0.88), breaks = seq(0, 0.8, by = 0.2)) +
+    xlab(NULL) +
+    ylab('') +
+    theme(axis.text.x = element_text(angle = 20, hjust = 1))
+  
+  Ptlp_plast <- JA_plasticity  %>% 
+    mutate(variable = factor(variable, levels = c('abs(Ptlp)','abs(Ypd)', 'abs(Ymd)', 
+                                                  'abs(P50)', 'abs(Ks)', 'abs(Kl)',
+                                                  'abs(HV)'))) %>%
+    filter(type == 'plasticity') %>% 
+    filter(class == 'All environmental factors') %>% 
+    # use first filter to exclude Ptlp, or second to include it
+    # filter(trait.comb == 'P50-Ptlp' | trait.comb == 'Ymd-Ptlp' |
+    #          trait.comb == 'Ypd-Ptlp' | trait.comb == 'Ypd-Ptlp' | 
+    #          trait.comb == 'Ypd-Ptlp' ) %>% 
+    filter(str_detect(as.character(trait.comb), "Ptlp")) %>% 
+    filter(N.Obs >= 10) %>%
+    mutate(trait.comb = fct_recode(trait.comb, 'Ptlp-P50'  = 'P50-Ptlp')) %>% 
+    mutate(trait.comb = fct_recode(trait.comb, 'Ptlp-Ymd'  = 'Ymd-Ptlp')) %>%
+    ggplot(aes(y = log.ratio,
+               x = trait.comb,
+               fill = variable))  +  
+    geom_errorbar(aes(ymin = LCI,
+                      ymax = HCI,
+                      group = variable), 
+                  position = position_dodge(width = 0.3),
+                  width = 0, linewidth = 0.5, color = "black") + # Map the variable to shape aesthetic
+    geom_point(aes(fill=variable),shape = 21, size = 4, color = "black", stroke = 0.5,  # círculos con borde negro
+               position = position_dodge(width = 0.3)) +
+    geom_text(aes(x = 0.89, y = 0.75, label = "Pi['TLP']"),  # Use a character string for the expression
+              hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
+              color = 'black') +     
+    geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
+              position = position_dodge2(width = 0.78, preserve = "single"),
+              hjust = 0.5, size = 3.5, color = 'black') +
+    #scale_shape_manual(values = c('abs(P50)' = 16, 'abs(Ymd)' = 17, 'abs(Ypd)' = 18,
+    #                              'abs(Ks)' = 21, 'abs(Kl)' = 22, 'abs(HV)' = 23,
+    #                              'abs(Ptlp)' = 24)) +
+    scale_fill_manual(values = c('abs(P50)'='orange','abs(Ymd)'='orange', 
+                                 'abs(Ypd)'='orange',
+                                 'abs(Ks)'='orange', 'abs(Kl)'='orange',
+                                 'abs(Ptlp)'='black','abs(HV)'='orange')) +
+    scale_x_discrete(labels = function(x) {
+      sapply(x, function(label) {
+        parse(text = replace_labels(label, label_mapping))
+      })
+    }) +
+    theme_classic() +
+    My_Theme  +                                # Modify labels of ggplot2 barplot
+    scale_y_continuous(limits = c(0, 0.88), breaks = seq(0, 0.8, by = 0.2)) +
+    xlab(NULL) +
+    ylab('') +
+    theme(axis.text.x = element_text(angle = 20, hjust = 1))
+  
+  
+  
+  Ks_plast <- JA_plasticity  %>% 
+    mutate(variable = factor(variable, levels = c( 'abs(Ks)', 'abs(Ypd)','abs(Ymd)', 
+                                                   'abs(P50)','abs(Ptlp)','abs(Kl)',
+                                                   'abs(HV)'))) %>%
+    filter(type == 'plasticity') %>% 
+    filter(class == 'All environmental factors') %>% 
+    # use first filter to exclude Ptlp, or second to include it
+    # filter(trait.comb == 'P50-Ks' | trait.comb == 'Ymd-Ks' |
+    #        trait.comb == 'Ypd-Ks' | trait.comb == 'Ks-Kl' | 
+    #          trait.comb == 'Ks-HV' ) %>% 
+    filter(str_detect(as.character(trait.comb), "Ks")) %>% 
+    filter(N.Obs >= 10) %>%
+    mutate(trait.comb = fct_recode(trait.comb, 'Ks-P50'  = 'P50-Ks')) %>% 
+    mutate(trait.comb = fct_recode(trait.comb, 'Ks-Ymd'  = 'Ymd-Ks')) %>%
+    mutate(trait.comb = fct_recode(trait.comb, 'Ks-Ypd'  = 'Ypd-Ks')) %>%
+    ggplot(aes(y = log.ratio,
+               x = trait.comb,
+               fill = variable))  +  
+    geom_errorbar(aes(ymin = LCI,
+                      ymax = HCI,
+                      group = variable), 
+                  position = position_dodge(width = 0.3),
+                  width = 0, linewidth = 0.5, color = "black") + # Map the variable to shape aesthetic
+    geom_point(aes(fill=variable),shape = 21, size = 4, color = "black", stroke = 0.5,  # círculos con borde negro
+               position = position_dodge(width = 0.3)) +
+    geom_text(aes(x = 0.85, y = 0.75, label = "K['S']"),  # Use a character string for the expression
+              hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
+              color = 'black') +     
+    geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
+              position = position_dodge2(width = 0.78, preserve = "single"),
+              hjust = 0.5, size = 3.5, color = 'black') +
+    #scale_shape_manual(values = c('abs(P50)' = 16, 'abs(Ymd)' = 17, 'abs(Ypd)' = 18,
+    #                              'abs(Ks)' = 21, 'abs(Kl)' = 22, 'abs(HV)' = 23,
+    #                              'abs(Ptlp)' = 24)) +
+    scale_fill_manual(values = c('abs(P50)'='orange','abs(Ymd)'='orange', 'abs(Ypd)'='orange',
+                                 'abs(Ks)'='black', 'abs(Kl)'='orange',
+                                 'abs(Ptlp)'='orange','abs(HV)'='orange')) +
+    scale_x_discrete(labels = function(x) {
+      sapply(x, function(label) {
+        parse(text = replace_labels(label, label_mapping))
+      })
+    }) +
+    theme_classic() +
+    My_Theme  +                                # Modify labels of ggplot2 barplot
+    scale_y_continuous(limits = c(0, 0.88), breaks = seq(0, 0.8, by = 0.2)) +
+    xlab(NULL) +
+    ylab('') +
+    theme(axis.text.x = element_text(angle = 20, hjust = 1))
+  
+  
+  Kl_plast <- JA_plasticity  %>% 
+    mutate(variable = factor(variable, levels = c( 'abs(Kl)', 'abs(Ypd)','abs(Ymd)', 
+                                                   'abs(P50)','abs(Ptlp)','abs(Ks)',
+                                                   'abs(HV)'))) %>%
+    filter(type == 'plasticity') %>% 
+    filter(class == 'All environmental factors') %>% 
+    # use first filter to exclude Ptlp, or second to include it
+    # filter(trait.comb == 'P50-Kl' | trait.comb == 'Ymd-Kl' |
+    #          trait.comb == 'Ypd-Kl' | trait.comb == 'Ks-Kl' | 
+    #          trait.comb == 'Kl-HV' ) %>% 
+    filter(str_detect(as.character(trait.comb), "Kl")) %>% 
+    filter(N.Obs >= 10) %>%
+    mutate(trait.comb = fct_recode(trait.comb, 'Kl-P50'  = 'P50-Kl')) %>% 
+    mutate(trait.comb = fct_recode(trait.comb, 'Kl-Ymd'  = 'Ymd-Kl')) %>%
+    mutate(trait.comb = fct_recode(trait.comb, 'Kl-Ypd'  = 'Ypd-Kl')) %>%
+    mutate(trait.comb = fct_recode(trait.comb, 'Kl-Ks'   = 'Ks-Kl')) %>%
+    ggplot(aes(y = log.ratio,
+               x = trait.comb,
+               fill = variable))  +  
+    geom_errorbar(aes(ymin = LCI,
+                      ymax = HCI,
+                      group = variable), 
+                  position = position_dodge(width = 0.3),
+                  width = 0, linewidth = 0.5, color = "black") + # Map the variable to shape aesthetic
+    geom_point(aes(fill=variable),shape = 21, size = 4, color = "black", stroke = 0.5,  # círculos con borde negro
+               position = position_dodge(width = 0.3)) +
+    geom_text(aes(x = 0.85, y = 0.75, label = "K['L']"),  # Use a character string for the expression
+              hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
+              color = 'black') +     
+    geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
+              position = position_dodge2(width = 0.78, preserve = "single"),
+              hjust = 0.5, size = 3.5, color = 'black') +
+    #scale_shape_manual(values = c('abs(P50)' = 16, 'abs(Ymd)' = 17, 'abs(Ypd)' = 18,
+    #                              'abs(Ks)' = 21, 'abs(Kl)' = 22, 'abs(HV)' = 23,
+    #                              'abs(Ptlp)' = 24)) +
+    scale_fill_manual(values = c('abs(P50)'='orange','abs(Ymd)'='orange', 'abs(Ypd)'='orange',
+                                 'abs(Ks)'='orange', 'abs(Kl)'='black',
+                                 'abs(Ptlp)'='orange','abs(HV)'='orange')) +
+    scale_x_discrete(labels = function(x) {
+      sapply(x, function(label) {
+        parse(text = replace_labels(label, label_mapping))
+      })
+    }) +
+    theme_classic() +
+    My_Theme  +                                # Modify labels of ggplot2 barplot
+    scale_y_continuous(limits = c(0, 0.88), breaks = seq(0, 0.8, by = 0.2)) +
+    xlab(NULL) +
+    ylab('') +
+    theme(axis.text.x = element_text(angle = 20, hjust = 1))
+  
+  HV_plast <- JA_plasticity  %>% 
+    mutate(variable = factor(variable, levels = c( 'abs(HV)', 'abs(Kl)',
+                                                   'abs(Ypd)','abs(Ymd)', 
+                                                   'abs(P50)','abs(Ptlp)','abs(Ks)'))) %>%
+    filter(type == 'plasticity') %>% 
+    filter(class == 'All environmental factors') %>% 
+    # use first filter to exclude Ptlp, or second to include it
+    # filter(trait.comb == 'P50-HV' | trait.comb == 'Ymd-HV' |
+    #          trait.comb == 'Ypd-HV' | trait.comb == 'Ks-HV' | 
+    #          trait.comb == 'Kl-HV' ) %>% 
+    filter(str_detect(as.character(trait.comb), "HV")) %>% 
+    filter(N.Obs >= 10) %>%
+    mutate(trait.comb = fct_recode(trait.comb, 'HV-P50'  = 'P50-HV')) %>% 
+    mutate(trait.comb = fct_recode(trait.comb, 'HV-Ymd'  = 'Ymd-HV')) %>%
+    mutate(trait.comb = fct_recode(trait.comb, 'HV-Ypd'  = 'Ypd-HV')) %>%
+    mutate(trait.comb = fct_recode(trait.comb, 'HV-Kl'   = 'Kl-HV')) %>%
+    mutate(trait.comb = fct_recode(trait.comb, 'HV-Ks'  = 'Ks-HV')) %>%
+    ggplot(aes(y = log.ratio,
+               x = trait.comb,
+               fill = variable))  +  
+    geom_errorbar(aes(ymin = LCI,
+                      ymax = HCI,
+                      group = variable), 
+                  position = position_dodge(width = 0.3),
+                  width = 0, linewidth = 0.5, color = "black") + # Map the variable to shape aesthetic
+    geom_point(aes(fill=variable),shape = 21, size = 4, color = "black", stroke = 0.5,  # círculos con borde negro
+               position = position_dodge(width = 0.3)) +
+    geom_text(aes(x = 0.85, y = 0.75, label = "Hv"),  # Use a character string for the expression
+              hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
+              color = 'black') +     
+    geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
+              position = position_dodge2(width = 0.78, preserve = "single"),
+              hjust = 0.5, size = 3.5, color = 'black') +
+    #scale_shape_manual(values = c('abs(P50)' = 16, 'abs(Ymd)' = 17, 'abs(Ypd)' = 18,
+    #                              'abs(Ks)' = 21, 'abs(Kl)' = 22, 'abs(HV)' = 23,
+    #                              'abs(Ptlp)' = 24)) +
+    scale_fill_manual(values = c('abs(P50)'='orange','abs(Ymd)'='orange', 'abs(Ypd)'='orange',
+                                 'abs(Ks)'='orange', 'abs(Kl)'='orange',
+                                 'abs(Ptlp)'='orange','abs(HV)'='black')) +
+    scale_x_discrete(labels = function(x) {
+      sapply(x, function(label) {
+        parse(text = replace_labels(label, label_mapping))
+      })
+    }) +
+    theme_classic() +
+    My_Theme  +
+    scale_y_continuous(limits = c(0, 0.88), breaks = seq(0, 0.8, by = 0.2)) +
+    xlab(NULL) +
+    ylab('') +
+    theme(axis.text.x = element_text(angle = 20, hjust = 1))
+  
+}
+
+grid.arrange(Ypd_plast, Ymd_plast, P50_plast, Ptlp_plast, 
+             Ks_plast, Kl_plast, HV_plast,
+             ncol =1)
+
+plot_combined <- grid.arrange(
+  Ypd,        Ypd_plast,
+  Ymd,        Ymd_plast,
+  P50,        P50_plast,
+  Ptlp,       Ptlp_plast,
+  Ks,         Ks_plast,
+  Kl,         Kl_plast,
+  HV,         HV_plast,
+  ncol = 2,
+  left = textGrob("|log-ratio|", rot = 90, gp = gpar(fontsize = 16))
+)
+
+
+# Create column titles
+column_titles <- arrangeGrob(
+  grobs = list(
+    textGrob("All studies", gp = gpar(fontsize = 16, fontface = "bold")),
+    textGrob("Plasticity studies", gp = gpar(fontsize = 16, fontface = "bold"))
+  ),
+  ncol = 2
+)
+
+# Combine column titles and the plot grid
+plot_combined_with_titles <- arrangeGrob(
+  column_titles,
+  plot_combined,
+  ncol = 1,
+  heights = c(0.05, 0.95)  # Adjust space allocated to titles vs. plots
+)
+
+# Save the final plot
+ggsave("Fig.S3.png", plot = plot_combined_with_titles,
+       width = 9, height = 14.5, dpi = 300)
+
+#### Creating Fig. S6 ####
+# === CREATING FILE FOR TRAIT COMPARISONS IN MEGAPASCALS ===
+reps <- 10000
+min_sample_size <- 20
+selected_traits <- c("P50", "Ymd", "Ypd", "Ptlp")
+trait_combinations <- combn(selected_traits, 2, simplify = FALSE)
+
+# === SUBSETS TO USE (both using yi) ===
+subset_list <- list(
+  "All_Studies" = list(data = subset(plas, VarFactorAgg == "W"), variable = "yi"),
+  "Plasticity" = list(data = subset(plas, VarContextAgg != "spatial" & VarFactorAgg == "W"), variable = "yi")
+)
+
+# === FUNCTION FOR ANALYZING INDIVIDUAL TRAITS ===
+run_pairwise_trait_analysis <- function(data, trait, shared_papers, var_type = "yi", reps = 10000) {
+  subset_data <- subset(data, MeasName == trait & PaperID %in% shared_papers)
+  
+  if (nrow(subset_data) < min_sample_size) {
+    cat("  Insufficient sample size for Trait:", trait, "- Sample size:", nrow(subset_data), "\n")
+    return(data.frame(Estimate = NA, Lower_CI = NA, Upper_CI = NA, Sample_Size = nrow(subset_data), P_value = NA))
+  }
+  
+  response <- subset_data$yi
+  
+  model <- tryCatch(
+    {
+      rma.mv(response, subset_data$vi, random = list(~ 1 | PaperID, ~ 1 | SpeciesFix2),
+             control = list(optimizer = "optim", optmethod = "Nelder-Mead"),
+             data = subset_data)
+    },
+    error = function(e) NULL
+  )
+  
+  if (is.null(model)) {
+    cat("  Warning: Model fitting failed for Trait:", trait, "\n")
+    return(data.frame(Estimate = NA, Lower_CI = NA, Upper_CI = NA, Sample_Size = nrow(subset_data), P_value = NA))
+  }
+  
+  boot_func <- function(dat, indices, prog) {
+    prog$tick()
+    sel <- dat[indices, ]
+    res <- try(suppressWarnings(rma.mv(sel$yi, sel$vi,
+                                       random = list(~ 1 | SpeciesFix, ~ 1 | PaperID), data = sel)),
+               silent = TRUE)
+    if (inherits(res, "try-error")) NA else coef(res)
+  }
+  
+  pb <- progress_bar$new(total = reps + 1)
+  boot_results <- tryCatch(
+    boot(subset_data, boot_func, reps, prog = pb),
+    error = function(e) NULL
+  )
+  
+  if (is.null(boot_results)) {
+    cat("  Bootstrap failed for Trait:", trait, "\n")
+    return(data.frame(Estimate = NA, Lower_CI = NA, Upper_CI = NA, Sample_Size = nrow(subset_data), P_value = NA))
+  }
+  
+  ci_results <- tryCatch(
+    boot.ci(boot_results, type = "bca", index = 1),
+    error = function(e) NULL
+  )
+  
+  if (is.null(ci_results)) {
+    cat("  CI calculation failed for Trait:", trait, "\n")
+    return(data.frame(Estimate = NA, Lower_CI = NA, Upper_CI = NA, Sample_Size = nrow(subset_data), P_value = NA))
+  }
+  
+  boot_estimates <- boot_results$t[, 1]
+  p_value <- 2 * min(
+    mean(boot_estimates <= 0, na.rm = TRUE),
+    mean(boot_estimates >= 0, na.rm = TRUE)
+  )
+  
+  data.frame(
+    Estimate = coef(model)[1],
+    Lower_CI = ci_results$bca[4],
+    Upper_CI = ci_results$bca[5],
+    Sample_Size = model$k,
+    P_value = p_value
+  )
+}
+
+# === MAIN ANALYSIS LOOP FOR BOTH SUBSETS ===
+all_results <- list()
+
+for (subset_name in names(subset_list)) {
+  subset_data <- subset_list[[subset_name]]$data
+  
+  cat("Analyzing subset:", subset_name, "using yi\n")
+  
+  for (pair in trait_combinations) {
+    trait1 <- pair[1]
+    trait2 <- pair[2]
+    
+    shared_papers <- intersect(
+      unique(subset_data$PaperID[subset_data$MeasName == trait1]),
+      unique(subset_data$PaperID[subset_data$MeasName == trait2])
+    )
+    
+    if (length(shared_papers) == 0) next
+    
+    cat("  Traits:", trait1, "/", trait2, "- Shared Papers:", length(shared_papers), "\n")
+    
+    for (trait in c(trait1, trait2)) {
+      res <- run_pairwise_trait_analysis(subset_data, trait, shared_papers, var_type = "yi", reps)
+      n_obs <- nrow(subset(subset_data, MeasName == trait & PaperID %in% shared_papers))
+      
+      results_df <- data.frame(
+        Subset = subset_name,
+        MeasName = trait,
+        Paired_With = ifelse(trait == trait1, trait2, trait1),
+        Estimate = res$Estimate,
+        Lower_CI = res$Lower_CI,
+        Upper_CI = res$Upper_CI,
+        Sample_Size = res$Sample_Size,
+        P_value = res$P_value,
+        Shared_PaperIDs = length(shared_papers),
+        N_obs_Trait = n_obs,
+        Variable = "yi"
+      )
+      
+      all_results[[paste(subset_name, trait1, trait2, trait, sep = "_")]] <- results_df
+    }
+  }
+}
+
+final_results <- do.call(rbind, all_results)
+
+# === APPLY FDR CORRECTION ONLY IF SAMPLE SIZE >= 20 ===
+final_results$Pvalue_FDRcorrected <- NA
+valid_rows <- which(final_results$Sample_Size >= 20 & !is.na(final_results$P_value))
+final_results$Pvalue_FDRcorrected[valid_rows] <- p.adjust(final_results$P_value[valid_rows], method = "fdr")
+
+# === SAVE RESULTS ===
+write.table(final_results,
+            file = "Water_potentials_megapascals.tsv",
+            sep = "\t",
+            quote = FALSE,
+            row.names = FALSE)
+
+# === LOAD FILE ===
+df <- read_tsv("Water_potentials_megapascals.tsv") %>%
+  mutate(
+    trait_comb = mapply(function(a, b) paste(sort(c(a, b)), collapse = "-"),
+                        trimws(MeasName), trimws(Paired_With))
+  )
+
+# === CHECK CONFIDENCE INTERVAL OVERLAPS ===
+check_overlap <- function(subdf) {
+  if (nrow(subdf) != 2) {
+    subdf$Sig <- NA
+    subdf$fontface_label <- "plain"
+    return(subdf)
+  }
+  lci1 <- subdf$Lower_CI[1]; hci1 <- subdf$Upper_CI[1]
+  lci2 <- subdf$Lower_CI[2]; hci2 <- subdf$Upper_CI[2]
+  if (any(is.na(c(lci1, hci1, lci2, hci2)))) {
+    subdf$Sig <- NA
+    subdf$fontface_label <- "plain"
+    return(subdf)
+  }
+  overlap <- !(hci1 < lci2 || hci2 < lci1)
+  subdf$Sig <- if (overlap) c("No", "No") else c("Yes", "Yes")
+  subdf$fontface_label <- if (overlap) c("plain", "plain") else c("bold", "bold")
+  return(subdf)
+}
+
+# === APPLY OVERLAP CHECK ===
+df_result <- df %>%
+  group_by(Subset, trait_comb) %>%
+  group_modify(~ check_overlap(.x)) %>%
+  ungroup()
+
+# === LABEL MAPPING WITH GREEK SYMBOLS ===
+label_mapping <- c(
+  "Ypd" = expression(Psi["PD"]),
+  "Ymd" = expression(Psi["MD"]),
+  "P50" = expression('P'["50"]),
+  "Ptlp" = expression(Pi["TLP"])
+)
+
+# === DEFINE TRAITS AND COMBINATIONS ===
+traits <- c("Ypd", "Ymd", "P50", "Ptlp")
+trait_pairs <- combn(traits, 2)
+pair_labels <- apply(trait_pairs, 2, function(x) paste(sort(x), collapse = "-"))
+
+replace_labels <- function(combination, mapping) {
+  traits <- strsplit(combination, "-")[[1]]
+  expr_parts <- sapply(traits, function(trait) deparse(mapping[[trait]]))
+  paste(expr_parts, collapse = " - ")
+}
+
+ordered_labels <- sapply(pair_labels, function(x) replace_labels(x, label_mapping))
+ordered_labels <- factor(ordered_labels, levels = ordered_labels)
+
+# === PREPARE DATA FOR PLOTTING ===
+df <- df_result %>%
+  filter(
+    Subset %in% c("All_Studies", "Plasticity"),
+    Sample_Size >= 20,
+    Variable == "yi",
+    MeasName %in% traits
+  ) %>%
+  mutate(
+    trait1 = as.character(sapply(strsplit(as.character(trait_comb), "-"), function(x) sort(x)[1])),
+    trait2 = as.character(sapply(strsplit(as.character(trait_comb), "-"), function(x) sort(x)[2])),
+    trait.comb.sorted = paste(trait1, trait2, sep = "-"),
+    subset_type = case_when(
+      Subset == "Plasticity" ~ "Plasticity",
+      Subset == "All_Studies" ~ "All studies",
+      TRUE ~ Subset
+    ),
+    variable = MeasName
+  ) %>%
+  filter(trait.comb.sorted %in% pair_labels) %>%
+  mutate(
+    axis_trait = case_when(
+      variable == trait1 ~ trait1,
+      variable == trait2 ~ trait2,
+      TRUE ~ NA_character_
+    ),
+    label_text = sapply(trait.comb.sorted, function(x) replace_labels(x, label_mapping)),
+    facet_order = factor(label_text, levels = levels(ordered_labels))
+  ) %>%
+  drop_na(axis_trait)
+
+# === SET FACTORS FOR AXIS AND GROUPING ===
+df$axis_trait <- factor(df$axis_trait, levels = traits)
+df$subset_type <- factor(df$subset_type, levels = c("Plasticity", "All studies"))
+
+# === Y AXIS CONFIGURATION WITH 0.25 TICKS ===
+pos_dodge <- position_dodge(width = 0.70)
+
+plot1 <- ggplot(df, aes(x = axis_trait, y = Estimate, fill = subset_type)) +
+  geom_errorbar(aes(ymin = Lower_CI, ymax = Upper_CI),
+                width = 0, color = "black", size = 0.3,
+                position = pos_dodge) +
+  geom_point(shape = 21, size = 3, stroke = 0.4,
+             position = pos_dodge) +
+  geom_text(aes(y = Upper_CI + 0.05, label = Sample_Size, fontface = fontface_label, 
+                group = interaction(axis_trait, subset_type)),
+            position = position_dodge2(width = 0.8, preserve = "single", padding = 1),
+            size = 2.6, color = "black") +
+  scale_fill_manual(
+    values = c("Plasticity" = "#008DF2", "All studies" = "white"),
+    name = NULL,
+    labels = c("Plasticity studies", "All studies")
+  ) +
+  scale_x_discrete(labels = function(x) parse(text = sapply(x, function(t) deparse(label_mapping[[t]])))) +
+  scale_y_continuous(
+    limits = c(-1, 0.3),
+    breaks = seq(-1, 0, by = 0.25)
+  ) +
+  facet_wrap(~ facet_order, labeller = labeller(facet_order = label_parsed),
+             scales = "free_x", nrow = 3) +
+  theme_classic() +
+  theme(
+    strip.text = element_blank(),
+    axis.title.y = element_text(size = 14, color = "black", margin = margin(r = 10)),
+    axis.text = element_text(size = 10, color = "black"),
+    legend.position = "none"
+  ) +
+  ylab(expression(Delta~"(MPa)")) +
+  xlab(NULL)
+plot1
+# === SAVE INDIVIDUAL PLOT ===
+#ggsave("Fig_water_MPa.png", plot = plot1, width = 3, height = 6.5, dpi = 300)
+
+
+
+
+
+# Read the TSV file Created for Fig. 2.
+df <- read_tsv("logratios_pairwise_traits_variable.tsv") %>%
+  mutate(
+    trait_comb = mapply(function(a, b) paste(sort(c(a, b)), collapse = "-"),
+                        trimws(MeasName), trimws(Paired_With))
+  )
+
+# Function to check confidence interval overlap between two entries
+check_overlap <- function(subdf) {
+  if (nrow(subdf) != 2) {
+    subdf$Sig <- NA
+    subdf$fontface_label <- "plain"
+    return(subdf)
+  }
+  lci1 <- subdf$Lower_CI[1]; hci1 <- subdf$Upper_CI[1]
+  lci2 <- subdf$Lower_CI[2]; hci2 <- subdf$Upper_CI[2]
+  if (any(is.na(c(lci1, hci1, lci2, hci2)))) {
+    subdf$Sig <- NA
+    subdf$fontface_label <- "plain"
+    return(subdf)
+  }
+  overlap <- !(hci1 < lci2 || hci2 < lci1)
+  subdf$Sig <- if (overlap) c("No", "No") else c("Yes", "Yes")
+  subdf$fontface_label <- if (overlap) c("plain", "plain") else c("bold", "bold")
+  return(subdf)
+}
+
+# Apply check_overlap BEFORE filtering
+df_result <- df %>%
+  group_by(Subset, trait_comb) %>%
+  group_modify(~ check_overlap(.x)) %>%
+  ungroup()
+
+# Trait label mapping for Greek symbols
+label_mapping <- c(
+  "Ypd" = expression(Psi["PD"]),
+  "Ymd" = expression(Psi["MD"]),
+  "P50" = expression('P'["50"]),
+  "Ptlp" = expression(Pi["TLP"])
+)
+
+# Helper functions
+sorted_comb <- function(x) paste(sort(x), collapse = "-")
+label_parsed <- function(labels) lapply(labels, function(x) parse(text = x))
+replace_labels <- function(combination, mapping) {
+  traits <- strsplit(combination, "-")[[1]]
+  expr_parts <- sapply(traits, function(trait) deparse(mapping[[trait]]))
+  paste(expr_parts, collapse = " - ")
+}
+
+# Dynamically determine traits present in the selected subsets
+traits <- df_result %>%
+  filter(Subset %in% c("All_W", "Plasticity_W")) %>%
+  pull(MeasName) %>%
+  unique() %>%
+  intersect(names(label_mapping))
+
+# Generate trait pair combinations and corresponding labels
+traits <- c("Ypd", "Ymd", "P50", "Ptlp")
+trait_pairs <- combn(traits, 2)
+pair_labels <- apply(trait_pairs, 2, sorted_comb)
+ordered_labels <- sapply(pair_labels, function(x) replace_labels(x, label_mapping))
+ordered_labels <- factor(ordered_labels, levels = ordered_labels)
+
+# Filter and prepare final dataset for plotting
+df <- df_result %>%
+  filter(
+    Subset %in% c("All_W", "Plasticity_W"),
+    Sample_Size >= 20,
+    Variable == "yi",
+    MeasName %in% traits
+  ) %>%
+  mutate(
+    trait1 = as.character(sapply(strsplit(as.character(trait_comb), "-"), function(x) sort(x)[1])),
+    trait2 = as.character(sapply(strsplit(as.character(trait_comb), "-"), function(x) sort(x)[2])),
+    trait.comb.sorted = paste(trait1, trait2, sep = "-"),
+    subset_type = case_when(
+      Subset == "Plasticity_W" ~ "Plasticity",
+      Subset == "All_W" ~ "All studies",
+      TRUE ~ Subset
+    ),
+    variable = MeasName
+  ) %>%
+  filter(trait.comb.sorted %in% pair_labels) %>%
+  mutate(
+    axis_trait = case_when(
+      variable == trait1 ~ trait1,
+      variable == trait2 ~ trait2,
+      TRUE ~ NA_character_
+    ),
+    label_text = sapply(trait.comb.sorted, function(x) replace_labels(x, label_mapping)),
+    facet_order = factor(label_text, levels = levels(ordered_labels))
+  ) %>%
+  drop_na(axis_trait)
+
+# Set axis and grouping factors
+df$axis_trait <- factor(df$axis_trait, levels = traits)
+df$subset_type <- factor(df$subset_type, levels = c("Plasticity", "All studies"))
+
+# Plotting setup
+pos_dodge <- position_dodge(width = 0.70)
+
+plot2 <- ggplot(df, aes(x = axis_trait, y = Estimate, fill = subset_type)) +
+  geom_errorbar(aes(ymin = Lower_CI, ymax = Upper_CI),
+                width = 0, color = "black", size = 0.3,
+                position = pos_dodge) +
+  geom_point(shape = 21, size = 3, stroke = 0.4,
+             position = pos_dodge) +
+  geom_text(aes(y = Upper_CI + 0.05, label = Sample_Size, fontface = fontface_label, 
+                group = interaction(axis_trait, subset_type)),
+            position = position_dodge2(width = 0.8, preserve = "single", padding = 1),
+            size = 2.6, color = "black") +
+  scale_fill_manual(
+    values = c("Plasticity" = "#008DF2", "All studies" = "white"),
+    name = NULL,
+    labels = c("Plasticity studies", "All studies")
+  ) +
+  scale_x_discrete(labels = function(x) parse(text = sapply(x, function(t) deparse(label_mapping[[t]])))) +
+  facet_wrap(~ facet_order, labeller = labeller(facet_order = label_parsed),
+             scales = "free_x", nrow = 3) +
+  theme_classic() +
+  theme(
+    strip.text = element_blank(),
+    axis.title.y = element_text(size = 14, color = "black", margin = margin(r = 10)),
+    axis.text = element_text(size = 10, color = "black"),
+    legend.position = "none") +
+  ylab("|log-ratio|") +
+  xlab(NULL) +
+  coord_cartesian(ylim = c(0, 1.02))
+
+# Display and save the figure
+print(plot2)
+#ggsave("log-ratio.png", plot = plot, width = 3, height = 6.5, dpi = 300)
+
+
+
+
+# === Create custom legend using patchwork ===
+legend_df <- tibble::tibble(
+  subset_type = c("Plasticity studies", "All studies"),
+  color = c("#008DF2", "white"),
+  x = c(1, 2),
+  y = 1
+)
+
+legend_plot <- ggplot(legend_df, aes(x = x, y = y)) +
+  geom_point(aes(fill = subset_type), shape = 21, size = 4, color = "black") +
+  geom_text(aes(label = subset_type), hjust = 0, nudge_x = 0.07, size = 4) +
+  scale_fill_manual(values = setNames(legend_df$color, legend_df$subset_type)) +
+  theme_void() +
+  theme(legend.position = "none") +
+  xlim(0.8, 3)
+
+# === Combine both plots and the legend ===
+final_plot <- (plot2 | plot1) / legend_plot +
+  plot_layout(heights = c(10, 1))
+final_plot
+
+# === Save final combined figure ===
+ggsave("Fig.S6.png", final_plot, width = 6.2, height = 7, dpi = 300)
 
 ##################################################################
 # Meta-analysis for absolute log-ratios for experimental types ###
@@ -712,7 +2290,7 @@ absexpsetting <- data.frame(
 )
 write.table(absexpsetting, file = "absexpsetting.tsv", sep = "\t", row.names = FALSE, quote = FALSE)
 
-##### Fig. S3a #####
+##### Fig. S4a #####
 absexpsetting <- read_tsv('absexpsetting.tsv')
 
 absexpsetting$VarContextAgg <- factor(absexpsetting$VarContextAgg, levels = c("Spatial", "Temporal", "Experimental", "Trial"))
@@ -735,7 +2313,7 @@ abslogratioexp <- ggplot(absexpsetting , aes(x = VarContextAgg, y = Estimate)) +
   scale_x_discrete(labels = c("Spatial", "Temporal", "Experimental", "Common garden"))
 
 abslogratioexp
-ggsave(filename = "FigS3a.png", plot = abslogratioexp, dpi = 300, width = 7.5, height = 9)
+ggsave(filename = "FigS4a.png", plot = abslogratioexp, dpi = 300, width = 7.5, height = 9)
 
 
 
@@ -746,25 +2324,25 @@ ggsave(filename = "FigS3a.png", plot = abslogratioexp, dpi = 300, width = 7.5, h
 # Function to perform bootstrap analysis for all combinations of traits and factors
 run_analysis_with_bootstrap <- function(data, trait, factor_level, tot_rep = 10000, min_sample_size = 3) {
   
-  # Filter the dataset for the specific Trait and Factor level
+  # Filter the dataset for the specific trait and factor level
   subset_data <- subset(data, MeasName == trait & VarFactorAgg == factor_level)
   
-  # If there are no data (sample size = 0), return NA for Estimate, Lower_CI, Upper_CI, and 0 for Sample_Size
+  # If there are no data (sample size = 0), return NA for all outputs
   if (nrow(subset_data) == 0) {
     return(data.frame(
-      Estimate = NA, Lower_CI = NA, Upper_CI = NA, Sample_Size = 0
+      Estimate = NA, Lower_CI = NA, Upper_CI = NA, Sample_Size = 0, P_value = NA
     ))
   }
   
-  # If the sample size is insufficient, return NA without fitting the model
+  # If the sample size is too small, return NA without fitting the model
   if (nrow(subset_data) < min_sample_size) {
     cat("  Insufficient sample size for Trait:", trait, "and Factor:", factor_level, "- Sample size:", nrow(subset_data), "\n")
     return(data.frame(
-      Estimate = NA, Lower_CI = NA, Upper_CI = NA, Sample_Size = nrow(subset_data)
+      Estimate = NA, Lower_CI = NA, Upper_CI = NA, Sample_Size = nrow(subset_data), P_value = NA
     ))
   }
   
-  # Attempt to fit the random-effects meta-analysis model using rma.mv
+  # Try fitting the random-effects meta-analysis model with rma.mv
   model <- tryCatch(
     {
       rma.mv(yi, vi, random = list(~ 1 | PaperID, ~ 1 | SpeciesFix2), 
@@ -774,7 +2352,7 @@ run_analysis_with_bootstrap <- function(data, trait, factor_level, tot_rep = 100
     error = function(e) NULL
   )
   
-  # If the first attempt fails, retry with a different optimizer
+  # If fitting fails, try a different optimizer
   if (is.null(model)) {
     cat("  Warning: Initial model fitting failed for Trait:", trait, "and Factor:", factor_level, "\n")
     model <- tryCatch(
@@ -791,11 +2369,11 @@ run_analysis_with_bootstrap <- function(data, trait, factor_level, tot_rep = 100
   if (is.null(model)) {
     cat("  Error: Model fitting failed for Trait:", trait, "and Factor:", factor_level, "even after retrying\n")
     return(data.frame(
-      Estimate = NA, Lower_CI = NA, Upper_CI = NA, Sample_Size = nrow(subset_data)
+      Estimate = NA, Lower_CI = NA, Upper_CI = NA, Sample_Size = nrow(subset_data), P_value = NA
     ))
   }
   
-  # Bootstrap function
+  # Define the bootstrap function
   boot_func <- function(plasboot, indices, prog) {
     prog$tick()
     sel <- plasboot[indices, ]
@@ -812,43 +2390,51 @@ run_analysis_with_bootstrap <- function(data, trait, factor_level, tot_rep = 100
     error = function(e) NULL
   )
   
-  # If bootstrap fails, return NA values
+  # If bootstrap fails, return NA
   if (is.null(boot_results)) {
     cat("  Error: Bootstrap failed for Trait:", trait, "and Factor:", factor_level, "\n")
     return(data.frame(
-      Estimate = NA, Lower_CI = NA, Upper_CI = NA, Sample_Size = nrow(subset_data)
+      Estimate = NA, Lower_CI = NA, Upper_CI = NA, Sample_Size = nrow(subset_data), P_value = NA
     ))
   }
   
-  # Calculate confidence intervals
+  # Compute confidence intervals
   ci_results <- tryCatch(
     boot.ci(boot_results, type = "bca", index = 1:2),
     error = function(e) NULL
   )
   
-  # If confidence interval calculation fails, return NA values
+  # If CI calculation fails, return NA
   if (is.null(ci_results)) {
     cat("  Error: Confidence interval calculation failed for Trait:", trait, "and Factor:", factor_level, "\n")
     return(data.frame(
-      Estimate = NA, Lower_CI = NA, Upper_CI = NA, Sample_Size = nrow(subset_data)
+      Estimate = NA, Lower_CI = NA, Upper_CI = NA, Sample_Size = nrow(subset_data), P_value = NA
     ))
   }
   
-  # Extract specific parameters
+  # Extract estimate, CI, and sample size
   estimate <- coef(model)[1]
   ci_bca <- ci_results$bca[4:5]
   sample_size <- model$k
   
-  # Return the results
+  # Compute two-tailed empirical p-value from bootstrap estimates
+  boot_estimates <- boot_results$t[, 1]
+  p_value <- 2 * min(
+    mean(boot_estimates <= 0, na.rm = TRUE),
+    mean(boot_estimates >= 0, na.rm = TRUE)
+  )
+  
+  # Return results
   data.frame(
     Estimate = estimate,
     Lower_CI = ci_bca[1],
     Upper_CI = ci_bca[2],
-    Sample_Size = sample_size
+    Sample_Size = sample_size,
+    P_value = p_value
   )
 }
 
-# Function to run analysis for each combination of Trait and Factor level
+# Function to run analysis for each combination of trait and factor level
 run_analysis_with_subsets <- function(data, tot_rep = 10000) {
   
   # Define three subsets
@@ -868,16 +2454,12 @@ run_analysis_with_subsets <- function(data, tot_rep = 10000) {
     cat("Analyzing subset:", subset_name, "\n")
     subset_data <- subsets[[subset_name]]
     
-    # Iterate over all possible combinations of MeasName and VarFactorAgg
     for (trait in meas_levels) {
       for (factor_level in factor_levels) {
-        
         cat("  Analyzing Trait:", trait, "and Factor:", factor_level, "\n")
         
-        # Run the analysis only if there is data for that combination
         res <- run_analysis_with_bootstrap(subset_data, trait, factor_level, tot_rep)
         
-        # Create a data frame with the results and add Subset, MeasName, and VarFactorAgg
         results_df <- data.frame(
           Subset = subset_name,
           MeasName = trait,
@@ -885,7 +2467,8 @@ run_analysis_with_subsets <- function(data, tot_rep = 10000) {
           Estimate = res$Estimate,
           Lower_CI = res$Lower_CI,
           Upper_CI = res$Upper_CI,
-          Sample_Size = res$Sample_Size
+          Sample_Size = res$Sample_Size,
+          P_value = res$P_value
         )
         
         all_results[[paste(subset_name, trait, factor_level, sep = "_")]] <- results_df
@@ -898,80 +2481,390 @@ run_analysis_with_subsets <- function(data, tot_rep = 10000) {
   return(final_results_df)
 }
 
-# Run the function
-logratiofactors <- run_analysis_with_subsets(plas, tot_rep = 10000)
+# Run the analysis
+logratiofactors_without_FDR <- run_analysis_with_subsets(plas, tot_rep = 10000)
 
-# Display the final dataset
-print(logratiofactors)
+# Display the final results
+print(logratiofactors_without_FDR)
 
-# Save the results as a .tsv file
-write.table(logratiofactors, 
-            file = "logratiofactors.tsv",  # Specify the output file name
-            sep = "\t",                   # Use tab as the separator
-            row.names = FALSE,            # Do not include row names
-            quote = FALSE)                # Do not add quotes
+# Save results to a .tsv file
+write.table(logratiofactors_without_FDR,
+            file = "logratiofactors_without_FDR.tsv",
+            sep = "\t",
+            row.names = FALSE,
+            quote = FALSE)
 
-##### Creating Fig. 2 ########
-#Load the file with the log-ratios created in the previous section
-logratiofactors <- read_tsv('logratiofactors.tsv')
+# Read the results
+df <- read.table("logratiofactors_without_FDR.tsv", sep = "\t", header = TRUE)
 
-#Plot log-ratios only for plasticity and all_studies subsets: datafigure2<- subset(logratiofactors, subset=(VarFactorAgg =="C"))
-logratiofactors.2<-subset(logratiofactors, subset=(Subset =="No Spatial" |Subset =="All Studies")) #C,N,W,T_VPD,L
+# Identify valid rows with sufficient sample size and valid p-values
+valid_indices <- which(df$Sample_Size >= 20 & !is.na(df$P_value))
 
-#Figures are created for each environmental factor separately
-datafigure2<-subset(logratiofactors.2, subset=(VarFactorAgg =="C")) #C,N,W,T_VPD,L
-datafigure2$MeasName <- factor(datafigure2$MeasName,levels = rev(c("Hv", "KL", "Ks", "P50", "Ptlp","Ymd", "Ypd")))
-datafigure2$Subset <- factor(datafigure2$Subset,levels = rev(c("All Studies", "No Spatial")))
-logratio <- ggplot(datafigure2, aes(x = MeasName, y = Estimate, fill = factor(Subset))) +
-  geom_errorbar(aes(ymin = Lower_CI, ymax = Upper_CI), width = 0, position = position_dodge(width = 0.6), size = 0.5) +
-  geom_point(shape = 21, size = 9, color = "black", stroke = 1, position = position_dodge(width = 0.6))+
-  scale_fill_manual(values = c("#9C9C9C","white"))+ #"T_VPD"="#FF0000", "C"="#9C9C9C", "N"="#00c800", "L"="#cccc00", "W"="#008DF2")
+# Create a new column for FDR-corrected p-values
+df$Pvalue_FDRcorrected <- NA
+
+# Apply FDR correction only to valid p-values
+df$Pvalue_FDRcorrected[valid_indices] <- p.adjust(df$P_value[valid_indices], method = "fdr")
+
+# Save the final table
+write.table(df, 
+            file = "logratiofactors.tsv",
+            sep = "\t",
+            row.names = FALSE,
+            quote = FALSE)
+
+
+##### Creating Fig. 3 ########
+#### Fig. 3 ####
+# Load the data
+logratiofactors <- read_tsv("logratiofactors.tsv")
+
+# Recode Estimate, Lower_CI, and Upper_CI as NA where Sample_Size < 20
+logratiofactors$Estimate[logratiofactors$Sample_Size < 20] <- NA
+logratiofactors$Lower_CI[logratiofactors$Sample_Size < 20] <- NA
+logratiofactors$Upper_CI[logratiofactors$Sample_Size < 20] <- NA
+
+# Filter the relevant subsets
+logratiofactors.2 <- subset(logratiofactors, Subset %in% c("No Spatial", "All Studies"))
+
+# Define order for facets and factors
+factor_order <- c("W", "L", "N", "T_VPD", "C")
+subset_order <- c("All Studies", "No Spatial")
+trait_order <- rev(c("Hv", "KL", "Ks", "P50", "Ptlp", "Ymd", "Ypd"))
+
+# Generate plotting variable
+logratiofactors.2$Subset_Factor <- paste0(logratiofactors.2$VarFactorAgg, "_", logratiofactors.2$Subset)
+
+# Set levels
+logratiofactors.2$Subset_Factor <- factor(
+  logratiofactors.2$Subset_Factor,
+  levels = c("W_No Spatial", "W_All Studies",
+             "L_No Spatial", "L_All Studies",
+             "N_No Spatial", "N_All Studies",
+             "T_VPD_No Spatial", "T_VPD_All Studies",
+             "C_No Spatial", "C_All Studies")
+)
+logratiofactors.2$VarFactorAgg <- factor(logratiofactors.2$VarFactorAgg, levels = factor_order)
+logratiofactors.2$MeasName <- factor(logratiofactors.2$MeasName, levels = trait_order)
+logratiofactors.2$Subset <- factor(logratiofactors.2$Subset, levels = rev(subset_order))
+
+# Create labels and fontface
+logratiofactors.2 <- logratiofactors.2 %>%
+  mutate(
+    Sample_Label = ifelse(is.na(Estimate), NA_character_, as.character(Sample_Size)),
+    is_bold = ifelse(!is.na(Estimate) & Pvalue_FDRcorrected < 0.05, "bold", "plain"),
+    Facet_Label = case_when(
+      VarFactorAgg == "W" ~ "Water~availability",
+      VarFactorAgg == "L" ~ "Light",
+      VarFactorAgg == "N" ~ "Nutrients",
+      VarFactorAgg == "T_VPD" ~ "Temperature",
+      VarFactorAgg == "C" ~ "CO[2]"
+    )
+  )
+
+# Facet titles (ensure correct order)
+facet_titles <- tibble(
+  VarFactorAgg = factor(c("W", "L", "N", "T_VPD", "C"), levels = factor_order),
+  x = Inf,
+  y = Inf,
+  label = c("Water~availability", "Light", "Nutrients", "Temperature", "CO[2]")
+)
+
+# Custom legend data inside each panel
+legend_data <- tibble(
+  VarFactorAgg = factor(rep(c("W", "L", "N", "T_VPD", "C"), each = 2), levels = factor_order),
+  label = rep(c("Plasticity studies", "All studies"), times = 5),
+  color = c("#008DF2", "white",
+            "#cccc00", "white",
+            "#00c800", "white",
+            "#FF0000", "white",
+            "#9C9C9C", "white"),
+  x = 0.7,
+  y = c(
+    -0.08, -0.23,    # W (bottom-left)
+    0.95, 0.80,    # L
+    0.95, 0.80,    # N
+    0.95, 0.80,    # T_VPD
+    0.95, 0.80     # C
+  )
+)
+
+# Set color scheme
+fill_colors <- c(
+  "W_No Spatial" = "#008DF2",
+  "L_No Spatial" = "#cccc00",
+  "N_No Spatial" = "#00c800",
+  "T_VPD_No Spatial" = "#FF0000",
+  "C_No Spatial" = "#9C9C9C",
+  "W_All Studies" = "white",
+  "L_All Studies" = "white",
+  "N_All Studies" = "white",
+  "T_VPD_All Studies" = "white",
+  "C_All Studies" = "white"
+)
+
+# Plot
+logratio <- ggplot(logratiofactors.2, aes(x = MeasName, y = Estimate, fill = Subset_Factor)) +
+  geom_errorbar(aes(ymin = Lower_CI, ymax = Upper_CI),
+                width = 0, position = position_dodge(width = 0.6), size = 0.5) +
+  geom_point(shape = 21, size = 9, color = "black", stroke = 1,
+             position = position_dodge(width = 0.6)) +
+  geom_text(
+    aes(label = Sample_Label, y = Upper_CI + 0.035, fontface = is_bold, group = Subset_Factor),
+    size = 8, color = "black",
+    position = position_dodge(width = 1.0),
+    vjust = 0,
+    na.rm = TRUE
+  ) +
+  # Internal legend circles
+  geom_point(
+    data = legend_data,
+    aes(x = x, y = y),
+    fill = legend_data$color,
+    shape = 21,
+    size = 8,
+    color = "black",
+    inherit.aes = FALSE
+  ) +
+  # Internal legend text
+  geom_text(
+    data = legend_data,
+    aes(x = x + 0.2, y = y, label = label),
+    size = 10,
+    hjust = 0,
+    inherit.aes = FALSE
+  ) +
+  # Titles inside each panel
+  geom_text(
+    data = facet_titles,
+    aes(x = x, y = y, label = label),
+    inherit.aes = FALSE,
+    hjust = 1.1,
+    vjust = 1.5,
+    parse = TRUE,
+    size = 11.5
+  ) +
+  scale_fill_manual(values = fill_colors) +
   geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  facet_wrap(~VarFactorAgg, ncol = 1, scales = "free_x", strip.position = "right") +
+  facetted_pos_scales(
+    x = list(
+      "W" = scale_x_discrete(labels = NULL),
+      "L" = scale_x_discrete(labels = NULL),
+      "N" = scale_x_discrete(labels = NULL),
+      "T_VPD" = scale_x_discrete(labels = NULL),
+      "C" = scale_x_discrete(labels = c(
+        expression(Ψ[PD]), expression(Ψ[MD]), expression(Π[TLP]),
+        expression(P[50]), expression(K[S]), expression(K[L]), "Hv"
+      ))
+    )
+  ) +
   labs(x = "", y = "log-ratio") +
-  theme(panel.background = element_rect(fill = "white", colour = "black"))+
-  theme(axis.text.x = element_text(size = 32, color = "black", margin = margin(t = 10)),  # Espacio entre letras y ticks en el eje x
-        axis.text.y = element_text(size = 30, color = "black", margin = margin(r = 5)),  # Espacio entre números y ticks en el eje y
-        axis.title.y = element_text(size = 38, color = "black", margin = margin(r = 10)),  # Espacio entre el título del eje y y los números
-        legend.position = "none",
-        panel.grid.major = element_blank(),
-        panel.grid.minor = element_blank(),
-        axis.ticks = element_line(color = "black", size = 0.5),
-        axis.ticks.length = unit(0.15, "cm")) +
-  scale_y_continuous(limits = c(-0.26, 1), breaks = seq(-0.4, 1, by = 0.2))+
-  scale_x_discrete(labels = c(expression(Ψ[PD]),expression(Ψ[MD]),expression(Π[TLP]),expression(P[50]),
-                              expression(K[S]),expression(K[L]),"Hv"))
+  theme(
+    panel.background = element_rect(fill = "white", colour = "black"),
+    axis.text.x = element_text(size = 32, color = "black", margin = margin(t = 10)),
+    axis.text.y = element_text(size = 30, color = "black", margin = margin(r = 5)),
+    axis.title.y = element_text(size = 38, color = "black", margin = margin(r = 10)),
+    strip.text = element_blank(),
+    legend.position = "none",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.ticks = element_line(color = "black", size = 0.5),
+    axis.ticks.length = unit(0.15, "cm")
+  ) +
+  scale_y_continuous(limits = c(-0.26, 1), breaks = seq(-0.4, 1, by = 0.2))
+
+# Print plot
 logratio
-ggsave(filename = "Fig2.C.png", plot = logratio, dpi = 300, width = 10, height = 5.5)
 
-##### Creating Fig. S4 ########
-#Load the file with the log-ratios created in the previous section
-logratiofactors <- read_tsv('logratiofactors.tsv')
+# Save plot
+ggsave("Fig.3.png", plot = logratio, width = 9.3, height = 22, dpi = 300)
 
-#Plot log-ratios for the three subsets
-datafigure2<-subset(logratiofactors, subset=(VarFactorAgg =="T_VPD")) #C,N,W,T_VPD,L
-datafigure2$MeasName <- factor(datafigure2$MeasName,levels = rev(c("Hv", "KL", "Ks", "P50", "Ptlp","Ymd", "Ypd")))
-datafigure2$Subset <- factor(datafigure2$Subset,levels = rev(c("Only Spatial","All Studies","No Spatial")))
-logratio3 <- ggplot(datafigure2, aes(x = MeasName, y = Estimate, fill = factor(Subset))) +
-  geom_errorbar(aes(ymin = Lower_CI, ymax = Upper_CI), width = 0, position = position_dodge(width = 0.75), size = 0.5) +
-  geom_point(shape = 21, size = 9, color = "black", stroke = 1, position = position_dodge(width = 0.75))+
-  scale_fill_manual(values = c("#FF0000","white","#ffcccb"))+ #"T_VPD"="#FF0000", "C"="#9C9C9C", "N"="#00c800", "L"="#cccc00", "W"="#008DF2")
+##### Creating Fig. S5 ########
+
+# Load required packages
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(ggforce)
+library(ggtext)  # Optional, for rich text if needed
+library(tibble)
+
+# Load the data
+logratiofactors <- read_tsv("logratiofactors.tsv")
+
+# Recode Estimate, Lower_CI, and Upper_CI as NA when Sample_Size is below 20
+logratiofactors$Estimate[logratiofactors$Sample_Size < 20] <- NA
+logratiofactors$Lower_CI[logratiofactors$Sample_Size < 20] <- NA
+logratiofactors$Upper_CI[logratiofactors$Sample_Size < 20] <- NA
+
+# Keep only the relevant subsets: No Spatial, All Studies, Only Spatial
+logratiofactors.2 <- subset(logratiofactors, Subset %in% c("No Spatial", "All Studies", "Only Spatial"))
+
+# Remove data for 'Only Spatial' within 'Nutrients' (no data available for this combination)
+logratiofactors.2 <- logratiofactors.2 %>%
+  filter(!(VarFactorAgg == "N" & Subset == "Only Spatial"))
+
+# Define the display order for environmental factors, subsets, and traits
+factor_order <- c("W", "L", "N", "T_VPD", "C")
+subset_order <- c("No Spatial", "All Studies", "Only Spatial")
+trait_order <- rev(c("Hv", "KL", "Ks", "P50", "Ptlp", "Ymd", "Ypd"))
+
+# Create a new variable combining factor and subset
+logratiofactors.2$Subset_Factor <- paste0(logratiofactors.2$VarFactorAgg, "_", logratiofactors.2$Subset)
+
+# Set factor levels for consistent ordering in plots
+logratiofactors.2$Subset_Factor <- factor(
+  logratiofactors.2$Subset_Factor,
+  levels = c("W_No Spatial", "W_All Studies", "W_Only Spatial",
+             "L_No Spatial", "L_All Studies", "L_Only Spatial",
+             "N_No Spatial", "N_All Studies", # no N_Only Spatial
+             "T_VPD_No Spatial", "T_VPD_All Studies", "T_VPD_Only Spatial",
+             "C_No Spatial", "C_All Studies")
+)
+logratiofactors.2$VarFactorAgg <- factor(logratiofactors.2$VarFactorAgg, levels = factor_order)
+logratiofactors.2$MeasName <- factor(logratiofactors.2$MeasName, levels = trait_order)
+logratiofactors.2$Subset <- factor(logratiofactors.2$Subset, levels = subset_order)
+
+# Add custom labels and font styling
+logratiofactors.2 <- logratiofactors.2 %>%
+  mutate(
+    Sample_Label = ifelse(is.na(Estimate), NA_character_, as.character(Sample_Size)),
+    is_bold = ifelse(!is.na(Estimate) & Pvalue_FDRcorrected < 0.05, "bold", "plain"),
+    Facet_Label = case_when(
+      VarFactorAgg == "W" ~ "Water~availability",
+      VarFactorAgg == "L" ~ "Light",
+      VarFactorAgg == "N" ~ "Nutrients",
+      VarFactorAgg == "T_VPD" ~ "Temperature",
+      VarFactorAgg == "C" ~ "CO[2]"
+    )
+  )
+
+# Titles to be displayed inside each facet
+facet_titles <- tibble(
+  VarFactorAgg = factor(c("W", "L", "N", "T_VPD", "C"), levels = factor_order),
+  x = Inf,
+  y = Inf,
+  label = c("Water~availability", "Light", "Nutrients", "Temperature", "CO[2]")
+)
+
+# Internal legend points and labels (excluding 'Only Spatial' for Nutrients)
+legend_data <- tibble(
+  VarFactorAgg = factor(c(
+    rep("W", 3),
+    rep("L", 3),
+    rep("N", 2),
+    rep("T_VPD", 3),
+    rep("C", 2)
+  ), levels = factor_order),
+  label = c("Plasticity studies", "All studies", "Spatial studies",  # W
+            "Plasticity studies", "All studies", "Spatial studies",  # L
+            "Plasticity studies", "All studies",                     # N
+            "Plasticity studies", "All studies", "Spatial studies",  # T_VPD
+            "Plasticity studies", "All studies"                      # C
+  ),
+  color = c("#008DF2", "white", "#ADD8E6",      # W
+            "#cccc00", "white", "#FFFFE0",      # L
+            "#00c800", "white",                 # N
+            "#FF0000", "white", "#FFCCCB",      # T_VPD
+            "#9C9C9C", "white"                  # C
+  ),
+  x = 0.7,
+  y = c(
+    -0.14, -0.29, -0.44,    # W
+    0.95, 0.80, 0.65,       # L
+    0.95, 0.80,             # N
+    0.95, 0.80, 0.65,       # T_VPD
+    0.95, 0.80              # C
+  )
+)
+
+# Define fill colors for each Subset_Factor
+fill_colors <- c(
+  "W_No Spatial" = "#008DF2",    "W_All Studies" = "white",      "W_Only Spatial" = "#ADD8E6",
+  "L_No Spatial" = "#cccc00",    "L_All Studies" = "white",      "L_Only Spatial" = "#FFFFE0",
+  "N_No Spatial" = "#00c800",    "N_All Studies" = "white",      # No "N_Only Spatial"
+  "T_VPD_No Spatial" = "#FF0000","T_VPD_All Studies" = "white",  "T_VPD_Only Spatial" = "#FFCCCB",
+  "C_No Spatial" = "#9C9C9C",    "C_All Studies" = "white"
+)
+
+# Create the plot
+logratio <- ggplot(logratiofactors.2, aes(x = MeasName, y = Estimate, fill = Subset_Factor)) +
+  geom_errorbar(aes(ymin = Lower_CI, ymax = Upper_CI),
+                width = 0, position = position_dodge(width = 0.6), size = 0.5) +
+  geom_point(shape = 21, size = 9, color = "black", stroke = 1,
+             position = position_dodge(width = 0.6)) +
+  geom_text(
+    aes(label = Sample_Label, y = Upper_CI + 0.04, fontface = is_bold, group = Subset_Factor),
+    size = 8, color = "black",
+    position = position_dodge(width = 0.8),
+    vjust = 0,
+    na.rm = TRUE
+  ) +
+  # Add internal legend points
+  geom_point(
+    data = legend_data,
+    aes(x = x, y = y),
+    fill = legend_data$color,
+    shape = 21,
+    size = 8,
+    color = "black",
+    inherit.aes = FALSE
+  ) +
+  # Add internal legend labels
+  geom_text(
+    data = legend_data,
+    aes(x = x + 0.2, y = y, label = label),
+    size = 10,
+    hjust = 0,
+    inherit.aes = FALSE
+  ) +
+  # Add custom facet titles inside each panel
+  geom_text(
+    data = facet_titles,
+    aes(x = x, y = y, label = label),
+    inherit.aes = FALSE,
+    hjust = 1.1,
+    vjust = 1.5,
+    parse = TRUE,
+    size = 11.5
+  ) +
+  scale_fill_manual(values = fill_colors) +
   geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  facet_wrap(~VarFactorAgg, ncol = 1, scales = "free_x", strip.position = "right") +
+  facetted_pos_scales(
+    x = list(
+      "W" = scale_x_discrete(labels = NULL),
+      "L" = scale_x_discrete(labels = NULL),
+      "N" = scale_x_discrete(labels = NULL),
+      "T_VPD" = scale_x_discrete(labels = NULL),
+      "C" = scale_x_discrete(labels = c(
+        expression(Ψ[PD]), expression(Ψ[MD]), expression(Π[TLP]),
+        expression(P[50]), expression(K[S]), expression(K[L]), "Hv"
+      ))
+    )
+  ) +
   labs(x = "", y = "log-ratio") +
-  theme(panel.background = element_rect(fill = "white", colour = "black"))+
-  theme(axis.text.x = element_text(size = 32, color = "black", margin = margin(t = 10)),  # Espacio entre letras y ticks en el eje x
-        axis.text.y = element_text(size = 30, color = "black", margin = margin(r = 5)),  # Espacio entre números y ticks en el eje y
-        axis.title.y = element_text(size = 38, color = "black", margin = margin(r = 10)),  # Espacio entre el título del eje y y los números
-        legend.position = "none",
-        panel.grid.major = element_blank(),
-        panel.grid.minor = element_blank(),
-        axis.ticks = element_line(color = "black", size = 0.5),
-        axis.ticks.length = unit(0.15, "cm")) +
-  scale_y_continuous(limits = c(-0.42, 1), breaks = seq(-0.4, 1, by = 0.2))+
-  scale_x_discrete(labels = c(expression(Ψ[PD]),expression(Ψ[MD]),expression(Π[TLP]),expression(P[50]),
-                              expression(K[S]),expression(K[L]),"Hv"))
-logratio3
+  theme(
+    panel.background = element_rect(fill = "white", colour = "black"),
+    axis.text.x = element_text(size = 32, color = "black", margin = margin(t = 10)),
+    axis.text.y = element_text(size = 30, color = "black", margin = margin(r = 5)),
+    axis.title.y = element_text(size = 38, color = "black", margin = margin(r = 10)),
+    strip.text = element_blank(),
+    legend.position = "none",
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.ticks = element_line(color = "black", size = 0.5),
+    axis.ticks.length = unit(0.15, "cm")
+  ) +
+  scale_y_continuous(limits = c(-0.5, 1), breaks = seq(-0.5, 1, by = 0.2))
 
-ggsave(filename = "Fig4S.T.png", plot = logratio3, dpi = 300, width = 12.5, height = 5.5)
+# Display the plot
+logratio
+
+# Save the plot to file
+ggsave("Fig. S5.png", plot = logratio, width = 16, height = 22, dpi = 300)
+
 
 
 ############################################################
@@ -1293,7 +3186,7 @@ write.table(waterpotentials_HSM,
             row.names = FALSE, 
             quote = FALSE)
 
-##### Creating Fig. 3a ##########
+##### Creating Fig. 4a ##########
 #Load the file with the md created in the previous section
 waterpotentials_HSM <- read_tsv('waterpotentials_HSM.tsv')
 waterpotentials_HSM$Subset <- factor(waterpotentials_HSM$Subset,levels = rev(c("Only Spatial", "All Studies", "No Spatial")))
@@ -1319,9 +3212,9 @@ md2 <- ggplot(waterpotentials_HSM2, aes(x = MeasName, y = Estimate, fill = facto
   scale_x_discrete(labels = c(expression(Ψ[PD]),expression(Ψ[MD]),expression(Π[TLP]),expression(P[50]),
                               "HSM"))
 md2
-ggsave(filename = "Fig3a.png", plot = md2, dpi = 300, width = 8, height = 6)
+ggsave(filename = "Fig4a.png", plot = md2, dpi = 300, width = 8, height = 6)
 
-##### Creating Fig. S5 ##########
+##### Creating Fig. S7 ##########
 #Load the file with the md created in the previous section
 waterpotentials_HSM <- read_tsv('waterpotentials_HSM.tsv')
 waterpotentials_HSM$Subset <- factor(waterpotentials_HSM$Subset,levels = rev(c("Only Spatial", "All Studies", "No Spatial")))
@@ -1346,7 +3239,7 @@ md3 <- ggplot(waterpotentials_HSM, aes(x = MeasName, y = Estimate, fill = factor
   scale_x_discrete(labels = c(expression(Ψ[PD]),expression(Ψ[MD]),expression(Π[TLP]),expression(P[50]),
                               "HSM"))
 md3
-ggsave(filename = "FigS5.png", plot = md3, dpi = 300, width = 11, height = 6)
+ggsave(filename = "FigS7.png", plot = md3, dpi = 300, width = 11, height = 6)
 
 
 
@@ -1449,7 +3342,7 @@ summary(test)
 emmeans(test, pairwise~Environment)
 
 
-##### Creating Fig. 3b ######
+##### Creating Fig. 4b ######
 HSM_two <- read_tsv('HSM_two_environments.tsv')
 ggplot(HSM_two, aes(x = Environment, y = HSM))+ geom_boxplot(aes(fill= Environment))
 plot <- ggplot(HSM_two, aes(x = factor(Environment), y = HSM, color = factor(Environment))) + 
@@ -1592,7 +3485,7 @@ r2 <- r.squaredGLMM(fit1)
 r2
 
 
-##### Creating Fig. 4 ####
+##### Creating Fig. 5 ####
 
 data <- read_tsv('fileforcorrelations.tsv')
 data.l<- subset(data, subset=(VarFactorAgg =="L"))
@@ -1687,9 +3580,9 @@ reg <- plot +
   
 reg
 # Save the final plot
-#ggsave(filename = "Fig4-Ypd-Ptlp.png", plot = reg, dpi = 300, width = 10.5, height = 10.3) #For other trait-trait correlations
+#ggsave(filename = "Fig5-Ypd-Ptlp.png", plot = reg, dpi = 300, width = 10.5, height = 10.3) #For other trait-trait correlations
 
-ggsave(filename = "Fig4-Ypd-P50.png", plot = reg, dpi = 300, width = 10.5, height = 11) #For Ypd-Other traits
+ggsave(filename = "Fig5-Ypd-P50.png", plot = reg, dpi = 300, width = 10.5, height = 11) #For Ypd-Other traits
 
 
 
@@ -1796,25 +3689,25 @@ write.table(final,
             quote = FALSE)
 
 
-##### Creating Fig. 5 ####
+##### Creating Fig. 6 ####
 final <- read_tsv('regwithinenviroment.tsv')
 reference <- subset(final, Environment == "R")
 treatment <- subset(final, Environment == "T")
-fit1 <- sma(log(abs(Ymd))~log(Ks+1), data=reference) #do it for each pair of traits
-fit1 <- sma(log(abs(Ymd))~log(Ks+1), data=treatment) #do it for each pair of traits
+fit1 <- sma(log(abs(Ymd))~log(abs(P50)), data=reference) #do it for each pair of traits
+fit1 <- sma(log(abs(Ymd))~log(abs(P50)), data=treatment) #do it for each pair of traits
 summary(fit1)
 
-fit_ref <- sma(log(Ks+1) ~ log(abs(Ymd)), data = reference)
+fit_ref <- sma(log(abs(P50)) ~ log(abs(Ymd)), data = reference)
 summary_ref <- summary(fit_ref)
 pval_ref <- fit_ref[["pval"]] 
 pval_ref
-fit_treat <- sma(log(Ks+1) ~ log(abs(Ymd)), data = treatment)
+fit_treat <- sma(log(abs(P50)) ~ log(abs(Ymd)), data = treatment)
 summary_treat <- summary(fit_treat)
 pval_treat <- fit_treat[["pval"]]
 pval_treat
 
 #
-pic <- ggplot(final, aes(x = log(abs(Ymd)), y = log(Ks+1), color = Environment)) +
+pic <- ggplot(final, aes(x = log(abs(Ymd)), y = log(abs(P50)), color = Environment)) +
   geom_point(size=10,shape=21,stroke = 3) + 
   labs(x = "Ymd", y = "Ks") +
   scale_color_manual(values = c("R" = "#0080FF", "T" = "#C00000")) +
@@ -1829,22 +3722,22 @@ pic
 
 # Reference
 if (pval_ref < 0.05) {
-  pic <- pic + geom_smooth(data = reference, aes(x = log(abs(Ymd)), y = log(Ks+1)),
+  pic <- pic + geom_smooth(data = reference, aes(x = log(abs(Ymd)), y = log(abs(P50))),
                            method = "lm", se = TRUE, color = "#0080FF", fill = "#0080FF", 
                            linetype = "solid", size = 2.5, alpha = 0.1)
 } else if (pval_ref < 0.10) {
-  pic <- pic + geom_smooth(data = reference, aes(x = log(abs(Ymd)), y = log(Ks+1)),
+  pic <- pic + geom_smooth(data = reference, aes(x = log(abs(Ymd)), y = log(abs(P50))),
                            method = "lm", se = TRUE, color = "#0080FF", fill = "#0080FF",
                            linetype = "dashed", size = 2.5, alpha = 0.1)
 }
 
 # Treatment
 if (pval_treat < 0.05) {
-  pic <- pic + geom_smooth(data = treatment, aes(x = log(abs(Ymd)), y = log(Ks+1)),
+  pic <- pic + geom_smooth(data = treatment, aes(x = log(abs(Ymd)), y = log(abs(P50))),
                            method = "lm", se = TRUE, color = "#C00000", fill = "#C00000",
                            linetype = "solid", size = 2.5, alpha = 0.3)
 } else if (pval_treat < 0.10) {
-  pic <- pic + geom_smooth(data = treatment, aes(x = log(abs(Ymd)), y = log(Ks+1)),
+  pic <- pic + geom_smooth(data = treatment, aes(x = log(abs(Ymd)), y = log(abs(P50))),
                            method = "lm", se = TRUE, color = "#C00000", fill = "#C00000",
                            linetype = "dashed", size = 2.5, alpha = 0.3)
 }
@@ -1869,4 +3762,4 @@ plot=pic + theme(panel.grid = element_blank(),plot.margin = unit(c(1,0.5,0.5,0.5
   ylab(expression(paste(log," ", K[S], " (", kg, " ", m^-1, " ", s^-1, " ", MPa^-1, ")")))
 plot
 
-ggsave(filename = "Fig.5-logYmd-logKs.png", plot = plot, dpi = 300, width = 11, height = 11.5)
+ggsave(filename = "Fig.6-logP50-logKs.png", plot = plot, dpi = 300, width = 11, height = 11.5)
