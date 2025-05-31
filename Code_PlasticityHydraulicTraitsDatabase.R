@@ -1,6 +1,7 @@
+
 #######################################################################
-##      Code for: "Limited adaptive responses in safety traits       ##
-##      support greater hydraulic risk under drier conditions"       ##
+##        Code for: "Limited plastic responses in safety traits      ##
+##        support greater hydraulic risk under drier conditions"     ##
 #######################################################################
 
 library(ggplot2)
@@ -586,7 +587,7 @@ plot <- ggplot(merged_data, aes(x = Estimate_NoSpatial, y = Estimate_Spatial)) +
   geom_smooth(method = "lm", formula = y ~ x, se = TRUE, color = "black", fill = "black", alpha=0.04)+
   geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "black", size = 1)
   
-figs3a<-plot+ theme(panel.grid = element_blank(),plot.margin = unit(c(1,0.5,0.5,0.5), "cm"))+
+figs4b<-plot+ theme(panel.grid = element_blank(),plot.margin = unit(c(1,0.5,0.5,0.5), "cm"))+
   theme(panel.grid.major.x = element_blank(),panel.grid.major.y = element_blank(), panel.grid.minor.x = element_blank(),panel.grid.minor.y = element_blank(), panel.background = element_rect(fill = "white", colour = "black", size=2),
         axis.text.x = element_text(size = 45, color = "black", margin = margin(t = 5, r = 50, b = 20, l = 55)), 
         axis.text.y = element_text(size = 45, color = "black", margin = margin(t = 0, r = 10, b = 5, l = 0)),
@@ -599,7 +600,7 @@ figs3a<-plot+ theme(panel.grid = element_blank(),plot.margin = unit(c(1,0.5,0.5,
   coord_cartesian(xlim = c(0,0.8), ylim = c(0,0.8)) + 
   scale_x_continuous(breaks=c(0,0.2,0.4,0.6,0.8)) + scale_y_continuous(breaks=c(0,0.2,0.4,0.6,0.8))+
   xlab("|log-ratio| Plasticity studies")+ylab("|log-ratio| Spatial studies")
-figs3a
+figs4b
 ggsave(filename = "Fig.S4b.png", plot = figs3a, dpi = 300, width = 10, height = 10)
 
 
@@ -1002,15 +1003,22 @@ JA_plasticity$trait.comb_expr <- sapply(JA_plasticity$trait.comb, function(comp)
 {
   
   Ypd <- JA_plasticity  %>% 
-    mutate(variable = factor(variable, levels = c('abs(Ypd)','abs(Ymd)', 'abs(P50)', 
-                                                  'abs(Ptlp)', 'abs(Ks)', 'abs(Kl)',
-                                                  'abs(HV)'))) %>%
+    mutate(variable = factor(variable, levels = c('abs(Ypd)', 'abs(Ymd)', 'abs(P50)', 
+                                                  'abs(Ptlp)', 'abs(Ks)', 'abs(Kl)', 'abs(HV)'))) %>%
     filter(type == 'all_studies') %>% 
     filter(class == 'All environmental factors') %>% 
     filter(str_detect(as.character(trait.comb), "Ypd")) %>%
     filter(N.Obs >= 10) %>%
-    mutate(trait.comb = fct_recode(trait.comb, 'Ypd-P50'  = 'P50-Ypd')) %>% 
-    mutate(trait.comb = fct_recode(trait.comb, 'Ypd-Ymd'  = 'Ymd-Ypd')) %>%
+    mutate(trait.comb = fct_recode(trait.comb,
+                                   'Ypd-HV'   = 'HV-Ypd',
+                                   'Ypd-P50'  = 'P50-Ypd',
+                                   'Ypd-Ymd'  = 'Ymd-Ypd',
+                                   'Ypd-Ptlp' = 'Ptlp-Ypd',
+                                   'Ypd-Ks'   = 'Ks-Ypd',
+                                   'Ypd-Kl'   = 'Kl-Ypd')) %>%
+    mutate(trait.comb = factor(trait.comb, levels = c(
+      "Ypd-Ymd", "Ypd-P50", "Ypd-Ptlp", "Ypd-Ks", "Ypd-Kl", "Ypd-HV"
+    ))) %>%
     ggplot(aes(y = log.ratio,
                x = trait.comb,
                fill = variable))  +  
@@ -1022,7 +1030,7 @@ JA_plasticity$trait.comb_expr <- sapply(JA_plasticity$trait.comb, function(comp)
     geom_point(aes(fill = variable),  # punto normal sin condicional
                shape = 21, size = 4, color = "black", stroke = 0.5,
                position = position_dodge(width = 0.4)) +
-    geom_text(aes(x = 0.9, y = 0.75, label = "Psi['PD']"),
+    geom_text(aes(x = 6.0, y = 0.75, label = "Psi['PD']"),
               hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
               color = 'black') +    
     geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
@@ -1057,7 +1065,16 @@ JA_plasticity$trait.comb_expr <- sapply(JA_plasticity$trait.comb, function(comp)
     # trait.comb == 'Ymd-HV' ) %>% 
     filter(str_detect(as.character(trait.comb), "Ymd")) %>%
     filter(N.Obs >= 10) %>%
-    mutate(trait.comb = fct_recode(trait.comb, 'Ymd-P50'  = 'P50-Ymd')) %>% 
+    mutate(trait.comb = fct_recode(trait.comb,
+                                   'Ymd-HV'   = 'HV-Ymd',
+                                   'Ymd-P50'  = 'P50-Ymd',
+                                   'Ymd-Ypd'  = 'Ymd-Ypd',
+                                   'Ymd-Ptlp' = 'Ptlp-Ymd',
+                                   'Ymd-Ks'   = 'Ks-Ymd',
+                                   'Ymd-Kl'   = 'Kl-Ymd')) %>%
+    mutate(trait.comb = factor(trait.comb, levels = c(
+      "Ymd-Ypd", "Ymd-P50", "Ymd-Ptlp", "Ymd-Ks", "Ymd-Kl", "Ymd-HV"
+    ))) %>%
     ggplot(aes(y = log.ratio,
                x = trait.comb,
                fill = variable))  +  
@@ -1068,7 +1085,7 @@ JA_plasticity$trait.comb_expr <- sapply(JA_plasticity$trait.comb, function(comp)
                   width = 0, linewidth = 0.5, color = "black") + # Map the variable to shape aesthetic
     geom_point(aes(fill=variable),shape = 21, size = 4, color = "black", stroke = 0.5,  # círculos con borde negro
                position = position_dodge(width = 0.3)) +
-    geom_text(aes(x = 0.9, y = 0.75, label = "Psi['MD']"),  # Use a character string for the expression
+    geom_text(aes(x = 6.0, y = 0.75, label = "Psi['MD']"),  # Use a character string for the expression
               hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
               color = 'black') +     
     geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
@@ -1105,6 +1122,16 @@ JA_plasticity$trait.comb_expr <- sapply(JA_plasticity$trait.comb, function(comp)
     #          trait.comb == 'P50-HV' ) %>%
     filter(str_detect(as.character(trait.comb), "P50")) %>%
     filter(N.Obs >= 10) %>%
+    mutate(trait.comb = fct_recode(trait.comb,
+                                   'P50-HV'   = 'HV-P50',
+                                   'P50-Ymd'  = 'P50-Ymd',
+                                   'P50-Ypd'  = 'P50-Ypd',
+                                   'P50-Ptlp' = 'Ptlp-P50',
+                                   'P50-Ks'   = 'Ks-P50',
+                                   'P50-Kl'   = 'Kl-P50')) %>%
+    mutate(trait.comb = factor(trait.comb, levels = c(
+      "P50-Ypd", "P50-Ymd", "P50-Ptlp", "P50-Ks", "P50-Kl", "P50-HV"
+    ))) %>%
     ggplot(aes(y = log.ratio,
                x = trait.comb,
                fill = variable))  +  
@@ -1115,7 +1142,7 @@ JA_plasticity$trait.comb_expr <- sapply(JA_plasticity$trait.comb, function(comp)
                   width = 0, linewidth = 0.5, color = "black") + # Map the variable to shape aesthetic
     geom_point(aes(fill=variable),shape = 21, size = 4, color = "black", stroke = 0.5,  # círculos con borde negro
                position = position_dodge(width = 0.3)) +
-    geom_text(aes(x = 0.9, y = 0.75, label = "P['50']"),  # Use a character string for the expression
+    geom_text(aes(x = 6.0, y = 0.75, label = "P['50']"),  # Use a character string for the expression
               hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
               color = 'black') +     
     geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
@@ -1151,8 +1178,16 @@ JA_plasticity$trait.comb_expr <- sapply(JA_plasticity$trait.comb, function(comp)
     #          trait.comb == 'Ypd-Ptlp' ) %>% 
     filter(str_detect(as.character(trait.comb), "Ptlp")) %>% 
     filter(N.Obs >= 10) %>%
-    mutate(trait.comb = fct_recode(trait.comb, 'Ptlp-P50'  = 'P50-Ptlp')) %>% 
-    mutate(trait.comb = fct_recode(trait.comb, 'Ptlp-Ymd'  = 'Ymd-Ptlp')) %>%
+    mutate(trait.comb = fct_recode(trait.comb,
+                                   'Ptlp-HV'   = 'HV-Ptlp',
+                                   'Ptlp-Ymd'  = 'Ptlp-Ymd',
+                                   'Ptlp-Ypd'  = 'Ptlp-Ypd',
+                                   'Ptlp-P50'  = 'P50-Ptlp',
+                                   'Ptlp-Ks'   = 'Ks-Ptlp',
+                                   'Ptlp-Kl'   = 'Kl-Ptlp')) %>%
+    mutate(trait.comb = factor(trait.comb, levels = c(
+      "Ptlp-Ypd", "Ptlp-Ymd", "Ptlp-P50", "Ptlp-Ks", "Ptlp-Kl", "Ptlp-HV"
+    ))) %>%
     ggplot(aes(y = log.ratio,
                x = trait.comb,
                fill = variable))  +  
@@ -1163,7 +1198,7 @@ JA_plasticity$trait.comb_expr <- sapply(JA_plasticity$trait.comb, function(comp)
                   width = 0, linewidth = 0.5, color = "black") + # Map the variable to shape aesthetic
     geom_point(aes(fill=variable),shape = 21, size = 4, color = "black", stroke = 0.5,  # círculos con borde negro
                position = position_dodge(width = 0.3)) +
-    geom_text(aes(x = 0.9, y = 0.75, label = "Pi['TLP']"),  # Use a character string for the expression
+    geom_text(aes(x = 6.0, y = 0.75, label = "Pi['TLP']"),  # Use a character string for the expression
               hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
               color = 'black') +     
     geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
@@ -1201,9 +1236,16 @@ JA_plasticity$trait.comb_expr <- sapply(JA_plasticity$trait.comb, function(comp)
     #          trait.comb == 'Ks-HV' ) %>% 
     filter(str_detect(as.character(trait.comb), "Ks")) %>%
     filter(N.Obs >= 10) %>%
-    mutate(trait.comb = fct_recode(trait.comb, 'Ks-P50'  = 'P50-Ks')) %>% 
-    mutate(trait.comb = fct_recode(trait.comb, 'Ks-Ymd'  = 'Ymd-Ks')) %>%
-    mutate(trait.comb = fct_recode(trait.comb, 'Ks-Ypd'  = 'Ypd-Ks')) %>%
+    mutate(trait.comb = fct_recode(trait.comb,
+                                   'Ks-HV'   = 'HV-Ks',
+                                   'Ks-Ymd'  = 'Ks-Ymd',
+                                   'Ks-Ypd'  = 'Ks-Ypd',
+                                   'Ks-P50'  = 'P50-Ks',
+                                   'Ks-Ptlp'   = 'Ptlp-Ks',
+                                   'Ks-Kl'   = 'Kl-Ks')) %>%
+    mutate(trait.comb = factor(trait.comb, levels = c(
+      "Ks-Ypd", "Ks-Ymd", "Ks-P50", "Ks-Ptlp", "Ks-Kl", "Ks-HV"
+    ))) %>%
     ggplot(aes(y = log.ratio,
                x = trait.comb,
                fill = variable))  +  
@@ -1214,7 +1256,7 @@ JA_plasticity$trait.comb_expr <- sapply(JA_plasticity$trait.comb, function(comp)
                   width = 0, linewidth = 0.5, color = "black") + # Map the variable to shape aesthetic
     geom_point(aes(fill=variable),shape = 21, size = 4, color = "black", stroke = 0.5,  # círculos con borde negro
                position = position_dodge(width = 0.3)) +
-    geom_text(aes(x = 0.9, y = 0.75, label = "K['S']"),  # Use a character string for the expression
+    geom_text(aes(x = 6.0, y = 0.75, label = "K['S']"),  # Use a character string for the expression
               hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
               color = 'black') +     
     geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
@@ -1254,6 +1296,10 @@ JA_plasticity$trait.comb_expr <- sapply(JA_plasticity$trait.comb, function(comp)
     mutate(trait.comb = fct_recode(trait.comb, 'Kl-Ymd'  = 'Ymd-Kl')) %>%
     mutate(trait.comb = fct_recode(trait.comb, 'Kl-Ypd'  = 'Ypd-Kl')) %>%
     mutate(trait.comb = fct_recode(trait.comb, 'Kl-Ks'   = 'Ks-Kl')) %>%
+    mutate(trait.comb = fct_recode(trait.comb, 'Kl-HV'   = 'HV-Kl')) %>%
+    mutate(trait.comb = factor(trait.comb, levels = c(
+      "Kl-Ypd", "Kl-Ymd", "Kl-P50", "Kl-Ptlp", "Kl-Ks", "Kl-HV"
+    ))) %>% 
     ggplot(aes(y = log.ratio,
                x = trait.comb,
                fill = variable))  +  
@@ -1264,7 +1310,7 @@ JA_plasticity$trait.comb_expr <- sapply(JA_plasticity$trait.comb, function(comp)
                   width = 0, linewidth = 0.5, color = "black") + # Map the variable to shape aesthetic
     geom_point(aes(fill=variable),shape = 21, size = 4, color = "black", stroke = 0.5,  # círculos con borde negro
                position = position_dodge(width = 0.3)) +
-    geom_text(aes(x = 0.9, y = 0.75, label = "K['L']"),  # Use a character string for the expression
+    geom_text(aes(x = 6.0, y = 0.75, label = "K['L']"),  # Use a character string for the expression
               hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
               color = 'black') +     
     geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
@@ -1305,6 +1351,9 @@ JA_plasticity$trait.comb_expr <- sapply(JA_plasticity$trait.comb, function(comp)
     mutate(trait.comb = fct_recode(trait.comb, 'HV-Ypd'  = 'Ypd-HV')) %>%
     mutate(trait.comb = fct_recode(trait.comb, 'HV-Kl'   = 'Kl-HV')) %>%
     mutate(trait.comb = fct_recode(trait.comb, 'HV-Ks'  = 'Ks-HV')) %>%
+    mutate(trait.comb = factor(trait.comb, levels = c(
+      "HV-Ypd", "HV-Ymd", "HV-P50", "HV-Ptlp", "HV-Ks", "HV-Kl"
+    ))) %>% 
     ggplot(aes(y = log.ratio,
                x = trait.comb,
                fill = variable))  +  
@@ -1315,7 +1364,7 @@ JA_plasticity$trait.comb_expr <- sapply(JA_plasticity$trait.comb, function(comp)
                   width = 0, linewidth = 0.5, color = "black") + # Map the variable to shape aesthetic
     geom_point(aes(fill=variable),shape = 21, size = 4, color = "black", stroke = 0.5,  # círculos con borde negro
                position = position_dodge(width = 0.3)) +
-    geom_text(aes(x = 0.9, y = 0.75, label = "Hv"),  # Use a character string for the expression
+    geom_text(aes(x = 6.0, y = 0.75, label = "Hv"),  # Use a character string for the expression
               hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
               color = 'black') +     
     geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
@@ -1365,8 +1414,16 @@ ggsave(filename = "test4.png", plot = plot, dpi = 300, width = 5, height = 15)
     #          trait.comb == 'Ypd-HV' ) %>% 
     filter(str_detect(as.character(trait.comb), "Ypd")) %>% 
     filter(N.Obs >= 10) %>%
-    mutate(trait.comb = fct_recode(trait.comb, 'Ypd-P50'  = 'P50-Ypd')) %>% 
-    mutate(trait.comb = fct_recode(trait.comb, 'Ypd-Ymd'  = 'Ymd-Ypd')) %>%
+    mutate(trait.comb = fct_recode(trait.comb,
+                                   'Ypd-HV'   = 'HV-Ypd',
+                                   'Ypd-P50'  = 'P50-Ypd',
+                                   'Ypd-Ymd'  = 'Ymd-Ypd',
+                                   'Ypd-Ptlp' = 'Ptlp-Ypd',
+                                   'Ypd-Ks'   = 'Ks-Ypd',
+                                   'Ypd-Kl'   = 'Kl-Ypd')) %>%
+    mutate(trait.comb = factor(trait.comb, levels = c(
+      "Ypd-Ymd", "Ypd-P50", "Ypd-Ptlp", "Ypd-Ks", "Ypd-Kl", "Ypd-HV"
+    ))) %>%
     ggplot(aes(y = log.ratio,
                x = trait.comb,
                fill = variable))  +  
@@ -1377,7 +1434,7 @@ ggsave(filename = "test4.png", plot = plot, dpi = 300, width = 5, height = 15)
                   width = 0, linewidth = 0.5, color = "black") + # Map the variable to shape aesthetic
     geom_point(aes(fill=variable),shape = 21, size = 4, color = "black", stroke = 0.5,  # círculos con borde negro
                position = position_dodge(width = 0.3)) +
-    geom_text(aes(x = 0.85, y = 0.75, label = "Psi['PD']"),  # Use a character string for the expression
+    geom_text(aes(x = 6.0, y = 0.75, label = "Psi['PD']"),  # Use a character string for the expression
               hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
               color = 'black') +     
     geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
@@ -1416,7 +1473,16 @@ ggsave(filename = "test4.png", plot = plot, dpi = 300, width = 5, height = 15)
     # trait.comb == 'Ymd-HV' ) %>% 
     filter(str_detect(as.character(trait.comb), "Ymd")) %>%
     filter(N.Obs >= 10) %>%
-    mutate(trait.comb = fct_recode(trait.comb, 'Ymd-P50'  = 'P50-Ymd')) %>% 
+    mutate(trait.comb = fct_recode(trait.comb,
+                                   'Ymd-HV'   = 'HV-Ymd',
+                                   'Ymd-P50'  = 'P50-Ymd',
+                                   'Ymd-Ypd'  = 'Ymd-Ypd',
+                                   'Ymd-Ptlp' = 'Ptlp-Ymd',
+                                   'Ymd-Ks'   = 'Ks-Ymd',
+                                   'Ymd-Kl'   = 'Kl-Ymd')) %>%
+    mutate(trait.comb = factor(trait.comb, levels = c(
+      "Ymd-Ypd", "Ymd-P50", "Ymd-Ptlp", "Ymd-Ks", "Ymd-Kl", "Ymd-HV"
+    ))) %>%
     ggplot(aes(y = log.ratio,
                x = trait.comb,
                fill = variable))  +  
@@ -1427,7 +1493,7 @@ ggsave(filename = "test4.png", plot = plot, dpi = 300, width = 5, height = 15)
                   width = 0, linewidth = 0.5, color = "black") + # Map the variable to shape aesthetic
     geom_point(aes(fill=variable),shape = 21, size = 4, color = "black", stroke = 0.5,  # círculos con borde negro
                position = position_dodge(width = 0.3)) +
-    geom_text(aes(x = 0.85, y = 0.75, label = "Psi['MD']"),  # Use a character string for the expression
+    geom_text(aes(x = 6.0, y = 0.75, label = "Psi['MD']"),  # Use a character string for the expression
               hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
               color = 'black') +     
     geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
@@ -1464,6 +1530,16 @@ ggsave(filename = "test4.png", plot = plot, dpi = 300, width = 5, height = 15)
     #          trait.comb == 'P50-HV' ) %>%
     filter(str_detect(as.character(trait.comb), "P50")) %>%
     filter(N.Obs >= 10) %>%
+    mutate(trait.comb = fct_recode(trait.comb,
+                                   'P50-HV'   = 'HV-P50',
+                                   'P50-Ymd'  = 'P50-Ymd',
+                                   'P50-Ypd'  = 'P50-Ypd',
+                                   'P50-Ptlp' = 'Ptlp-P50',
+                                   'P50-Ks'   = 'Ks-P50',
+                                   'P50-Kl'   = 'Kl-P50')) %>%
+    mutate(trait.comb = factor(trait.comb, levels = c(
+      "P50-Ypd", "P50-Ymd", "P50-Ptlp", "P50-Ks", "P50-Kl", "P50-HV"
+    ))) %>%
     ggplot(aes(y = log.ratio,
                x = trait.comb,
                fill = variable))  +  
@@ -1474,7 +1550,7 @@ ggsave(filename = "test4.png", plot = plot, dpi = 300, width = 5, height = 15)
                   width = 0, linewidth = 0.5, color = "black") + # Map the variable to shape aesthetic
     geom_point(aes(fill=variable),shape = 21, size = 4, color = "black", stroke = 0.5,  # círculos con borde negro
                position = position_dodge(width = 0.3)) +
-    geom_text(aes(x = 0.85, y = 0.75, label = "P['50']"),  # Use a character string for the expression
+    geom_text(aes(x = 6.0, y = 0.75, label = "P['50']"),  # Use a character string for the expression
               hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
               color = 'black') +     
     geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
@@ -1510,8 +1586,16 @@ ggsave(filename = "test4.png", plot = plot, dpi = 300, width = 5, height = 15)
     #          trait.comb == 'Ypd-Ptlp' ) %>% 
     filter(str_detect(as.character(trait.comb), "Ptlp")) %>% 
     filter(N.Obs >= 10) %>%
-    mutate(trait.comb = fct_recode(trait.comb, 'Ptlp-P50'  = 'P50-Ptlp')) %>% 
-    mutate(trait.comb = fct_recode(trait.comb, 'Ptlp-Ymd'  = 'Ymd-Ptlp')) %>%
+    mutate(trait.comb = fct_recode(trait.comb,
+                                   'Ptlp-HV'   = 'HV-Ptlp',
+                                   'Ptlp-Ymd'  = 'Ptlp-Ymd',
+                                   'Ptlp-Ypd'  = 'Ptlp-Ypd',
+                                   'Ptlp-P50'  = 'P50-Ptlp',
+                                   'Ptlp-Ks'   = 'Ks-Ptlp',
+                                   'Ptlp-Kl'   = 'Kl-Ptlp')) %>%
+    mutate(trait.comb = factor(trait.comb, levels = c(
+      "Ptlp-Ypd", "Ptlp-Ymd", "Ptlp-P50", "Ptlp-Ks", "Ptlp-Kl", "Ptlp-HV"
+    ))) %>%
     ggplot(aes(y = log.ratio,
                x = trait.comb,
                fill = variable))  +  
@@ -1522,7 +1606,7 @@ ggsave(filename = "test4.png", plot = plot, dpi = 300, width = 5, height = 15)
                   width = 0, linewidth = 0.5, color = "black") + # Map the variable to shape aesthetic
     geom_point(aes(fill=variable),shape = 21, size = 4, color = "black", stroke = 0.5,  # círculos con borde negro
                position = position_dodge(width = 0.3)) +
-    geom_text(aes(x = 0.89, y = 0.75, label = "Pi['TLP']"),  # Use a character string for the expression
+    geom_text(aes(x = 5.0, y = 0.75, label = "Pi['TLP']"),  # Use a character string for the expression
               hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
               color = 'black') +     
     geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
@@ -1561,9 +1645,16 @@ ggsave(filename = "test4.png", plot = plot, dpi = 300, width = 5, height = 15)
     #          trait.comb == 'Ks-HV' ) %>% 
     filter(str_detect(as.character(trait.comb), "Ks")) %>% 
     filter(N.Obs >= 10) %>%
-    mutate(trait.comb = fct_recode(trait.comb, 'Ks-P50'  = 'P50-Ks')) %>% 
-    mutate(trait.comb = fct_recode(trait.comb, 'Ks-Ymd'  = 'Ymd-Ks')) %>%
-    mutate(trait.comb = fct_recode(trait.comb, 'Ks-Ypd'  = 'Ypd-Ks')) %>%
+    mutate(trait.comb = fct_recode(trait.comb,
+                                   'Ks-HV'   = 'HV-Ks',
+                                   'Ks-Ymd'  = 'Ks-Ymd',
+                                   'Ks-Ypd'  = 'Ks-Ypd',
+                                   'Ks-P50'  = 'P50-Ks',
+                                   'Ks-Ptlp'   = 'Ptlp-Ks',
+                                   'Ks-Kl'   = 'Kl-Ks')) %>%
+    mutate(trait.comb = factor(trait.comb, levels = c(
+      "Ks-Ypd", "Ks-Ymd", "Ks-P50", "Ks-Ptlp", "Ks-Kl", "Ks-HV"
+    ))) %>%
     ggplot(aes(y = log.ratio,
                x = trait.comb,
                fill = variable))  +  
@@ -1574,7 +1665,7 @@ ggsave(filename = "test4.png", plot = plot, dpi = 300, width = 5, height = 15)
                   width = 0, linewidth = 0.5, color = "black") + # Map the variable to shape aesthetic
     geom_point(aes(fill=variable),shape = 21, size = 4, color = "black", stroke = 0.5,  # círculos con borde negro
                position = position_dodge(width = 0.3)) +
-    geom_text(aes(x = 0.85, y = 0.75, label = "K['S']"),  # Use a character string for the expression
+    geom_text(aes(x = 6.0, y = 0.75, label = "K['S']"),  # Use a character string for the expression
               hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
               color = 'black') +     
     geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
@@ -1615,6 +1706,10 @@ ggsave(filename = "test4.png", plot = plot, dpi = 300, width = 5, height = 15)
     mutate(trait.comb = fct_recode(trait.comb, 'Kl-Ymd'  = 'Ymd-Kl')) %>%
     mutate(trait.comb = fct_recode(trait.comb, 'Kl-Ypd'  = 'Ypd-Kl')) %>%
     mutate(trait.comb = fct_recode(trait.comb, 'Kl-Ks'   = 'Ks-Kl')) %>%
+    mutate(trait.comb = fct_recode(trait.comb, 'Kl-HV'   = 'HV-Kl')) %>%
+    mutate(trait.comb = factor(trait.comb, levels = c(
+      "Kl-Ypd", "Kl-Ymd", "Kl-P50", "Kl-Ptlp", "Kl-Ks", "Kl-HV"
+    ))) %>% 
     ggplot(aes(y = log.ratio,
                x = trait.comb,
                fill = variable))  +  
@@ -1625,7 +1720,7 @@ ggsave(filename = "test4.png", plot = plot, dpi = 300, width = 5, height = 15)
                   width = 0, linewidth = 0.5, color = "black") + # Map the variable to shape aesthetic
     geom_point(aes(fill=variable),shape = 21, size = 4, color = "black", stroke = 0.5,  # círculos con borde negro
                position = position_dodge(width = 0.3)) +
-    geom_text(aes(x = 0.85, y = 0.75, label = "K['L']"),  # Use a character string for the expression
+    geom_text(aes(x = 6.0, y = 0.75, label = "K['L']"),  # Use a character string for the expression
               hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
               color = 'black') +     
     geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
@@ -1666,6 +1761,9 @@ ggsave(filename = "test4.png", plot = plot, dpi = 300, width = 5, height = 15)
     mutate(trait.comb = fct_recode(trait.comb, 'HV-Ypd'  = 'Ypd-HV')) %>%
     mutate(trait.comb = fct_recode(trait.comb, 'HV-Kl'   = 'Kl-HV')) %>%
     mutate(trait.comb = fct_recode(trait.comb, 'HV-Ks'  = 'Ks-HV')) %>%
+    mutate(trait.comb = factor(trait.comb, levels = c(
+      "HV-Ypd", "HV-Ymd", "HV-P50", "HV-Ptlp", "HV-Ks", "HV-Kl"
+    ))) %>% 
     ggplot(aes(y = log.ratio,
                x = trait.comb,
                fill = variable))  +  
@@ -1676,7 +1774,7 @@ ggsave(filename = "test4.png", plot = plot, dpi = 300, width = 5, height = 15)
                   width = 0, linewidth = 0.5, color = "black") + # Map the variable to shape aesthetic
     geom_point(aes(fill=variable),shape = 21, size = 4, color = "black", stroke = 0.5,  # círculos con borde negro
                position = position_dodge(width = 0.3)) +
-    geom_text(aes(x = 0.85, y = 0.75, label = "Hv"),  # Use a character string for the expression
+    geom_text(aes(x = 5.1, y = 0.75, label = "Hv"),  # Use a character string for the expression
               hjust = 0.5, vjust = 0, size = 6, check_overlap = TRUE, parse = TRUE,
               color = 'black') +     
     geom_text(aes(y = HCI + 0.05, label = N.Obs, fontface = ifelse(bold, "bold", "plain")),
@@ -2139,7 +2237,7 @@ plot2 <- ggplot(df, aes(x = axis_trait, y = Estimate, fill = subset_type)) +
     axis.title.y = element_text(size = 14, color = "black", margin = margin(r = 10)),
     axis.text = element_text(size = 10, color = "black"),
     legend.position = "none") +
-  ylab("|log-ratio|") +
+  ylab("log-ratio") +
   xlab(NULL) +
   coord_cartesian(ylim = c(0, 1.02))
 
@@ -3239,7 +3337,7 @@ md3 <- ggplot(waterpotentials_HSM, aes(x = MeasName, y = Estimate, fill = factor
   scale_x_discrete(labels = c(expression(Ψ[PD]),expression(Ψ[MD]),expression(Π[TLP]),expression(P[50]),
                               "HSM"))
 md3
-ggsave(filename = "FigS7.png", plot = md3, dpi = 300, width = 11, height = 6)
+ggsave(filename = "Fig.S7.png", plot = md3, dpi = 300, width = 11, height = 6)
 
 
 
